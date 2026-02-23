@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+backend/.venv/
+backend/.cache/
+*.duckdb
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Env
+.env
+*.env.local
+
+# Test artifacts
+backend/test_secrets.py
+backend/test_output.txt
