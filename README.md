@@ -1,6 +1,6 @@
-# 🛡️ GHAS Dependabot Dashboard
+# 🛡️ GHAS Enterprise Dashboard
 
-High-performance, authenticated dashboard for large Dependabot alert CSVs (1M+ rows).
+High-performance, authenticated dashboard for GitHub Advanced Security (GHAS) data — Dependabot alerts and Secret Scanning alerts from large CSVs (1M+ rows).
 
 **Stack:** React + Vite · FastAPI · DuckDB · TanStack Query/Table · Recharts · JWT Auth
 
@@ -14,34 +14,40 @@ High-performance, authenticated dashboard for large Dependabot alert CSVs (1M+ r
 │  ┌──────────────┐                                               │
 │  │  LoginPage   │──POST /auth/login────┐                        │
 │  └──────────────┘                      │                        │
-│  ┌──────────────────────────────────┐  │                        │
-│  │  React / Vite (:3000)           │  │                        │
-│  │  - MetricsBar                   │  │                        │
-│  │  - Charts (Recharts)            │  │                        │
-│  │  - AlertsTable (server-paged)   │  │                        │
-│  │  - Sidebar (typeahead org)      │  │                        │
-│  └──────────┬───────────────────────┘  │                        │
-│             │  /api/*  (Vite proxy)    │                        │
-│             │  Authorization: Bearer   │                        │
-└─────────────┼──────────────────────────┼────────────────────────┘
-              ▼                          ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  FastAPI (:8000)                                                │
-│  ┌──────────┐  ┌────────────┐  ┌───────────────────────────┐   │
-│  │ auth.py  │  │  main.py   │  │       engine.py           │   │
-│  │ JWT+BCrypt│  │  routes    │  │  DuckDB query engine      │   │
-│  └──────────┘  └──────┬─────┘  │  - CSV ingestion          │   │
-│                       │        │  - Thread-local conns      │   │
-│                       ▼        │  - JSON-safe serialisation │   │
-│              ┌─────────────┐   │  - Cache cleanup           │   │
-│              │   DuckDB    │◀──┘                             │   │
-│              │  .duckdb    │                                 │   │
-│              └──────┬──────┘                                 │   │
-│                     │  one-time ingestion                    │   │
-│                     ▼                                        │   │
-│              ┌─────────────┐                                 │   │
-│              │  CSV file   │                                 │   │
-│              └─────────────┘                                 │   │
+│  ┌──────────────────────────────────────┐                       │
+│  │  React / Vite (:3000)               │                       │
+│  │  ──────────────────────             │                       │
+│  │  • LandingPage (Overview)           │                       │
+│  │  • Dependabot Dashboard             │                       │
+│  │    - MetricsBar / Charts            │                       │
+│  │    - AlertsTable (server-paged)     │                       │
+│  │  • Secret Scanning Dashboard        │                       │
+│  │    - MetricsBar / Charts            │                       │
+│  │    - AlertsTable (server-paged)     │                       │
+│  └──────────┬───────────────────────────┘                       │
+│             │                                                   │
+│             │  /api/* (Vite proxy)                              │
+│             │  Authorization: Bearer token                      │
+└─────────────┼───────────────────────────────────────────────────┘
+              ▼
+┌────────────────────────────────────────────────────────────────┐
+│  FastAPI (:8000)                                               │
+│  ┌──────────┐  ┌────────────┐  ┌─────────────────────────────┐ │
+│  │ auth.py  │  │  main.py   │  │  engine.py (Dependabot)     │ │
+│  │ JWT+BCrypt│ │  routes    │  │  secrets_engine.py (Secrets)│ │
+│  └──────────┘  └──────┬─────┘  │  - DuckDB query engines     │ │
+│                       │        │  - CSV ingestion            │ │
+│                       ▼        │  - Thread-local conns       │ │
+│              ┌─────────────┐   │  - JSON-safe serialisation  │ │
+│              │  DuckDB x2  │◀──┘  - Cache cleanup            │ │
+│              │  .duckdb    │                                  │ │
+│              └──────┬──────┘                                  │ │
+│                     │  one-time ingestion                     │ │
+│                     ▼                                         │ │
+│              ┌─────────────────────────┐                      │ │
+│              │  dependabot_alerts.csv  │                      │ │
+│              │  secret_scanning.csv    │                      │ │
+│              └─────────────────────────┘                      │ │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -120,6 +126,7 @@ chmod +x start.sh
 ```
 
 This will:
+
 1. Create a Python virtualenv and install backend dependencies
 2. Start the FastAPI backend on `http://localhost:8000`
 3. Install frontend npm packages (if needed)
@@ -149,11 +156,11 @@ npm run dev
 
 ### Stopping the application
 
-| Method | How to stop |
-|---|---|
-| **`start.sh`** | Press `Ctrl+C` — the script traps the signal and kills both servers |
-| **Manual (two terminals)** | Press `Ctrl+C` in each terminal |
-| **VS Code tasks** | Click the terminal tab for each task and press `Ctrl+C` |
+| Method                     | How to stop                                                         |
+| -------------------------- | ------------------------------------------------------------------- |
+| **`start.sh`**             | Press `Ctrl+C` — the script traps the signal and kills both servers |
+| **Manual (two terminals)** | Press `Ctrl+C` in each terminal                                     |
+| **VS Code tasks**          | Click the terminal tab for each task and press `Ctrl+C`             |
 
 ---
 
@@ -163,8 +170,8 @@ All data endpoints require a valid JWT `Bearer` token. The login page is shown a
 
 ### Default credentials
 
-| | |
-|---|---|
+|              |         |
+| ------------ | ------- |
 | **Username** | `admin` |
 | **Password** | `admin` |
 
@@ -188,20 +195,24 @@ export JWT_EXPIRE_MINUTES=480                 # token lifetime in minutes (defau
 
 ## Loading Data
 
-**Option A — Auto-load:** Place a `dependabot_alerts.csv` in the project root (next to `backend/`).
-It will be ingested automatically on the first API call after login.
+**Option A — Auto-load:** Place CSV files in the project root (next to `backend/`):
 
-**Option B — Upload in UI:** Use the "Click to upload" button in the left sidebar.
+- `dependabot_alerts.csv` — for Dependabot vulnerability alerts
+- `secret_scanning.csv` — for Secret Scanning alerts
+
+Both files will be ingested automatically on the first API call after login.
+
+**Option B — Upload in UI:** Use the "Click to upload" button in each dashboard's sidebar.
 Files up to 1 GB work fine; DuckDB ingests them in seconds.
 
 ### DuckDB cache behaviour
 
-| Scenario | What happens |
-|---|---|
-| Same CSV uploaded again (unchanged) | Reuses existing `.duckdb` — skips ingestion |
-| Same filename, different content | New `.duckdb` created (fingerprint changed) |
-| Different CSV filename | New `.duckdb` created |
-| **Old `.duckdb` files** | **Automatically deleted** when a new one is created |
+| Scenario                            | What happens                                        |
+| ----------------------------------- | --------------------------------------------------- |
+| Same CSV uploaded again (unchanged) | Reuses existing `.duckdb` — skips ingestion         |
+| Same filename, different content    | New `.duckdb` created (fingerprint changed)         |
+| Different CSV filename              | New `.duckdb` created                               |
+| **Old `.duckdb` files**             | **Automatically deleted** when a new one is created |
 
 Cache is stored in `backend/.cache/`.
 
@@ -211,27 +222,51 @@ Cache is stored in `backend/.cache/`.
 
 ### Public (no auth required)
 
-| Method | Path | Description |
-|--------|------|-------------|
+| Method | Path          | Description                            |
+| ------ | ------------- | -------------------------------------- |
 | `POST` | `/auth/login` | Authenticate; returns JWT access token |
-| `GET` | `/auth/me` | Returns current user info |
-| `GET` | `/health` | `{ status: "ok" }` |
+| `GET`  | `/auth/me`    | Returns current user info              |
+| `GET`  | `/health`     | `{ status: "ok" }`                     |
 
 ### Protected (Bearer token required)
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/upload` | Upload a CSV; ingests into DuckDB |
-| `GET` | `/filter-options` | Distinct severities, states, ecosystems |
-| `GET` | `/filter-options/orgs?q=&limit=50` | Typeahead search for organization names |
-| `GET` | `/metrics` | Aggregate counts (total, open, critical, etc.) |
-| `GET` | `/alerts?page=1&page_size=50&severity=...` | Paginated table rows |
-| `GET` | `/alerts/export` | Download filtered CSV |
-| `GET` | `/charts/severity` | Severity breakdown |
-| `GET` | `/charts/state` | State breakdown |
-| `GET` | `/charts/ecosystem` | Top 10 ecosystems |
-| `GET` | `/charts/org` | Top 20 orgs with open/total/repos |
-| `GET` | `/charts/trend` | Daily alert creation trend |
+#### Overview
+
+| Method | Path        | Description                                                       |
+| ------ | ----------- | ----------------------------------------------------------------- |
+| `GET`  | `/overview` | Combined risk overview across Dependabot + Secret Scanning by org |
+
+#### Dependabot Endpoints
+
+| Method | Path                                       | Description                                    |
+| ------ | ------------------------------------------ | ---------------------------------------------- |
+| `POST` | `/upload`                                  | Upload Dependabot CSV; ingests into DuckDB     |
+| `GET`  | `/filter-options`                          | Distinct severities, states, ecosystems        |
+| `GET`  | `/filter-options/orgs?q=&limit=50`         | Typeahead search for organization names        |
+| `GET`  | `/metrics`                                 | Aggregate counts (total, open, critical, etc.) |
+| `GET`  | `/alerts?page=1&page_size=50&severity=...` | Paginated table rows                           |
+| `GET`  | `/alerts/export`                           | Download filtered CSV                          |
+| `GET`  | `/charts/severity`                         | Severity breakdown                             |
+| `GET`  | `/charts/state`                            | State breakdown                                |
+| `GET`  | `/charts/ecosystem`                        | Top 10 ecosystems                              |
+| `GET`  | `/charts/org`                              | Top 20 orgs with open/total/repos              |
+| `GET`  | `/charts/trend`                            | Daily alert creation trend                     |
+
+#### Secret Scanning Endpoints
+
+| Method | Path                                                  | Description                                     |
+| ------ | ----------------------------------------------------- | ----------------------------------------------- |
+| `POST` | `/secrets/upload`                                     | Upload Secret Scanning CSV; ingests into DuckDB |
+| `GET`  | `/secrets/filter-options`                             | Distinct secret types, states, validity values  |
+| `GET`  | `/secrets/filter-options/orgs?q=&limit=50`            | Typeahead search for organization names         |
+| `GET`  | `/secrets/metrics`                                    | Aggregate counts (total, open, leaked, etc.)    |
+| `GET`  | `/secrets/alerts?page=1&page_size=50&secret_type=...` | Paginated table rows                            |
+| `GET`  | `/secrets/alerts/export`                              | Download filtered CSV                           |
+| `GET`  | `/secrets/charts/secret-type`                         | Secret type breakdown                           |
+| `GET`  | `/secrets/charts/state`                               | State breakdown                                 |
+| `GET`  | `/secrets/charts/validity`                            | Validity breakdown                              |
+| `GET`  | `/secrets/charts/org`                                 | Top 20 orgs with open/total/repos               |
+| `GET`  | `/secrets/charts/trend`                               | Daily alert creation trend                      |
 
 API docs (Swagger UI): **http://localhost:8000/docs**
 
@@ -240,13 +275,16 @@ API docs (Swagger UI): **http://localhost:8000/docs**
 ## Project Structure
 
 ```
-ghas-dashboard/
+ghas-enterprise-dashboard/
 ├── start.sh                          # one-command start (both servers)
-├── dependabot_alerts.csv             # default CSV (auto-loaded)
+├── dependabot_alerts.csv             # default Dependabot CSV (auto-loaded)
+├── secret_scanning.csv               # default Secret Scanning CSV (auto-loaded)
+├── LICENSE                           # project license
 ├── backend/
 │   ├── main.py                       # FastAPI app, routes, auth wiring
 │   ├── auth.py                       # JWT authentication (bcrypt + python-jose)
-│   ├── engine.py                     # DuckDB query engine, ingestion, cache
+│   ├── engine.py                     # DuckDB query engine for Dependabot
+│   ├── secrets_engine.py             # DuckDB query engine for Secret Scanning
 │   ├── requirements.txt              # Python dependencies
 │   └── .cache/                       # auto-created .duckdb files (gitignored)
 ├── frontend/
@@ -254,21 +292,33 @@ ghas-dashboard/
 │   ├── package.json
 │   ├── vite.config.ts                # dev proxy /api → :8000
 │   ├── tailwind.config.js
+│   ├── postcss.config.js
 │   ├── tsconfig.json
 │   └── src/
 │       ├── main.tsx                  # React entry + AuthProvider + QueryClient
-│       ├── App.tsx                   # Auth gate, dashboard layout, tab switcher
+│       ├── App.tsx                   # Auth gate, dashboard switcher, tab navigation
 │       ├── AuthContext.tsx            # Auth state, localStorage token management
-│       ├── api.ts                    # API types, fetch with Bearer token
-│       ├── useFilters.ts             # Filter state hook
+│       ├── api.ts                    # Dependabot API types, fetch with Bearer token
+│       ├── secretsApi.ts             # Secret Scanning API types
+│       ├── useFilters.ts             # Dependabot filter state hook
+│       ├── useSecretsFilters.ts      # Secret Scanning filter state hook
 │       ├── badges.ts                 # Severity/state badge styling
 │       ├── index.css                 # Tailwind + custom styles
 │       └── components/
+│           ├── LandingPage.tsx        # Security overview (combined metrics)
 │           ├── LoginPage.tsx          # Login form (username/password)
-│           ├── Sidebar.tsx            # Filters + org typeahead + CSV upload
-│           ├── MetricsBar.tsx         # Summary metric cards
-│           ├── Charts.tsx             # Recharts visualisations
-│           └── AlertsTable.tsx        # TanStack Table with server-side pagination
+│           ├── Sidebar.tsx            # Dependabot filters + CSV upload
+│           ├── MetricsBar.tsx         # Dependabot summary metric cards
+│           ├── Charts.tsx             # Dependabot Recharts visualisations
+│           ├── AlertsTable.tsx        # Dependabot TanStack Table with pagination
+│           └── secrets/
+│               ├── SecretsSidebar.tsx        # Secret Scanning filters + CSV upload
+│               ├── SecretsMetricsBar.tsx     # Secret Scanning summary metrics
+│               ├── SecretsCharts.tsx         # Secret Scanning visualisations
+│               └── SecretsAlertsTable.tsx    # Secret Scanning table with pagination
+├── docs/
+│   └── screenshots/                  # Dashboard screenshots
+│       └── README.md                 # Screenshot naming conventions
 └── .vscode/
     └── tasks.json                    # VS Code tasks for starting servers
 ```
@@ -277,14 +327,14 @@ ghas-dashboard/
 
 ## Performance at Scale (1M+ rows)
 
-| Component | Behaviour | Latency |
-|---|---|---|
-| CSV → DuckDB ingestion | One-time; cached with fingerprinting | 2–5 sec |
-| `/metrics` | Single aggregation query | < 10 ms |
-| `/charts/*` | `GROUP BY` queries, 10–20 rows returned | < 10 ms |
-| `/alerts` | `LIMIT 50 OFFSET x`, only 50 rows leave DB | < 5 ms |
-| `/filter-options/orgs` | `ILIKE` on indexed column, max 50 results | < 5 ms |
-| `/alerts/export` | Full table CSV dump (worst case) | 1–3 sec |
-| Browser rendering | Never receives more than 50 table rows | Instant |
+| Component              | Behaviour                                  | Latency |
+| ---------------------- | ------------------------------------------ | ------- |
+| CSV → DuckDB ingestion | One-time; cached with fingerprinting       | 2–5 sec |
+| `/metrics`             | Single aggregation query                   | < 10 ms |
+| `/charts/*`            | `GROUP BY` queries, 10–20 rows returned    | < 10 ms |
+| `/alerts`              | `LIMIT 50 OFFSET x`, only 50 rows leave DB | < 5 ms  |
+| `/filter-options/orgs` | `ILIKE` on indexed column, max 50 results  | < 5 ms  |
+| `/alerts/export`       | Full table CSV dump (worst case)           | 1–3 sec |
+| Browser rendering      | Never receives more than 50 table rows     | Instant |
 
 The browser never does any heavy computation — all aggregation happens server-side in DuckDB SQL.
