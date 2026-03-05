@@ -2,8 +2,10 @@ import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from './api'
 import { secretsApi } from './secretsApi'
+import { depsApi } from './depsApi'
 import { useFilters } from './useFilters'
 import { useSecretsFilters } from './useSecretsFilters'
+import { useDepsFilters } from './useDepsFilters'
 import { useAuth } from './AuthContext'
 import Sidebar from './components/Sidebar'
 import MetricsBar from './components/MetricsBar'
@@ -13,11 +15,15 @@ import SecretsSidebar from './components/secrets/SecretsSidebar'
 import SecretsMetricsBar from './components/secrets/SecretsMetricsBar'
 import SecretsCharts from './components/secrets/SecretsCharts'
 import SecretsAlertsTable from './components/secrets/SecretsAlertsTable'
+import DepsSidebar from './components/deps/DepsSidebar'
+import DepsMetricsBar from './components/deps/DepsMetricsBar'
+import DepsCharts from './components/deps/DepsCharts'
+import DepsTable from './components/deps/DepsTable'
 import LoginPage from './components/LoginPage'
 import LandingPage from './components/LandingPage'
-import { BarChart2, Table2, LogOut, Shield, KeyRound, Home } from 'lucide-react'
+import { BarChart2, Table2, LogOut, Shield, KeyRound, Home, Package } from 'lucide-react'
 
-type Dashboard = 'overview' | 'dependabot' | 'secrets'
+type Dashboard = 'overview' | 'dependabot' | 'secrets' | 'dependencies'
 type Tab = 'charts' | 'table'
 
 export default function App() {
@@ -48,9 +54,10 @@ function AppShell({ username, onLogout }: { username: string; onLogout: () => vo
             🛡️ GHAS Dashboard
           </span>
           {([
-            ['overview',   <Home size={14} />,       'Overview'],
-            ['dependabot', <Shield size={14} />,     'Dependabot'],
-            ['secrets',    <KeyRound size={14} />,   'Secret Scanning'],
+            ['overview',     <Home size={14} />,       'Overview'],
+            ['dependabot',   <Shield size={14} />,     'Dependabot'],
+            ['secrets',      <KeyRound size={14} />,   'Secret Scanning'],
+            ['dependencies', <Package size={14} />,    'Dependencies'],
           ] as const).map(([id, icon, label]) => (
             <button
               key={id}
@@ -94,7 +101,9 @@ function AppShell({ username, onLogout }: { username: string; onLogout: () => vo
           ? <LandingPage onNavigate={setDashboard} />
           : dashboard === 'dependabot'
           ? <DependabotDashboard />
-          : <SecretsDashboard />}
+          : dashboard === 'secrets'
+          ? <SecretsDashboard />
+          : <DependenciesDashboard />}
       </div>
     </div>
   )
@@ -198,6 +207,54 @@ function SecretsDashboard() {
 
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ── DEPENDENCIES DASHBOARD ────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+function DependenciesDashboard() {
+  const [tab, setTab] = useState<Tab>('charts')
+  const [uploadStatus, setUploadStatus] = useState<'idle' | 'loading' | 'error'>('idle')
+  const [uploadMsg, setUploadMsg] = useState('')
+  const queryClient = useQueryClient()
+  const { filters, set, clear, hasActive } = useDepsFilters()
+
+  const uploadMutation = useMutation({
+    mutationFn: depsApi.upload,
+    onMutate: () => { setUploadStatus('loading'); setUploadMsg('') },
+    onSuccess: () => {
+      setUploadStatus('idle'); setUploadMsg('✓ Uploaded & ingested!')
+      queryClient.invalidateQueries()
+      setTimeout(() => setUploadMsg(''), 4000)
+    },
+    onError: (e: Error) => { setUploadStatus('error'); setUploadMsg(e.message) },
+  })
+
+  return (
+    <div style={{ display: 'flex', height: '100%', overflow: 'hidden' }}>
+      <DepsSidebar filters={filters} set={set} clear={clear} hasActive={hasActive}
+                   onUpload={f => uploadMutation.mutate(f)} />
+
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <DashboardHeader
+          title="📦 Dependencies Inventory"
+          tab={tab} setTab={setTab}
+          uploadStatus={uploadStatus} uploadMsg={uploadMsg}
+        />
+
+        <main style={{ flex: 1, overflowY: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <section>
+            <SectionTitle>📊 Summary Metrics</SectionTitle>
+            <DepsMetricsBar />
+          </section>
+          {hasActive && <ActiveFiltersChips filters={filters} set={set} clear={clear} kind="dependencies" />}
+          {tab === 'charts' && <section><SectionTitle>📈 Visualizations</SectionTitle><DepsCharts /></section>}
+          {tab === 'table' && <section style={{ flex: 1 }}><SectionTitle>📋 Dependencies Data · Server-Side Pagination</SectionTitle><DepsTable filters={filters} /></section>}
+        </main>
+      </div>
+    </div>
+  )
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
 // ── SHARED HELPERS ────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -251,12 +308,13 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 
 import type { Filters } from './api'
 import type { SecretsFilters } from './secretsApi'
+import type { DepsFilters } from './depsApi'
 
 function ActiveFiltersChips({ filters, set, clear, kind }: {
-  filters: Filters | SecretsFilters
+  filters: Filters | SecretsFilters | DepsFilters
   set: (k: any, v: any) => void
   clear: () => void
-  kind: 'dependabot' | 'secrets'
+  kind: 'dependabot' | 'secrets' | 'dependencies'
 }) {
   const chips: { label: string; onRemove: () => void }[] = []
 
@@ -268,12 +326,18 @@ function ActiveFiltersChips({ filters, set, clear, kind }: {
     f.state.forEach(v => chips.push({ label: `state:${v}`, onRemove: () => set('state', f.state.filter(x => x !== v)) }))
     f.ecosystem.forEach(v => chips.push({ label: `eco:${v}`, onRemove: () => set('ecosystem', f.ecosystem.filter(x => x !== v)) }))
     f.org.forEach(v => chips.push({ label: `org:${v}`, onRemove: () => set('org', f.org.filter(x => x !== v)) }))
-  } else {
+  } else if (kind === 'secrets') {
     const f = filters as SecretsFilters
     f.secret_type.forEach(v => chips.push({ label: `type:${v}`, onRemove: () => set('secret_type', f.secret_type.filter(x => x !== v)) }))
     f.state.forEach(v => chips.push({ label: `state:${v}`, onRemove: () => set('state', f.state.filter(x => x !== v)) }))
     f.validity.forEach(v => chips.push({ label: `validity:${v}`, onRemove: () => set('validity', f.validity.filter(x => x !== v)) }))
     f.org.forEach(v => chips.push({ label: `org:${v}`, onRemove: () => set('org', f.org.filter(x => x !== v)) }))
+  } else {
+    const f = filters as DepsFilters
+    f.org.forEach(v => chips.push({ label: `org:${v}`, onRemove: () => set('org', f.org.filter(x => x !== v)) }))
+    f.repo.forEach(v => chips.push({ label: `repo:${v}`, onRemove: () => set('repo', f.repo.filter(x => x !== v)) }))
+    f.package_file.forEach(v => chips.push({ label: `pkg:${v}`, onRemove: () => set('package_file', f.package_file.filter(x => x !== v)) }))
+    if (f.is_open_source) chips.push({ label: `open_source:${f.is_open_source}`, onRemove: () => set('is_open_source', '') })
   }
 
   return (

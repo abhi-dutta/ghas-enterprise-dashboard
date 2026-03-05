@@ -1,7 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api'
+import { depsApi } from '../depsApi'
 import type { OverviewOrgRow } from '../api'
-import { Shield, KeyRound, AlertTriangle, Eye } from 'lucide-react'
+import { Shield, KeyRound, AlertTriangle, Eye, Package } from 'lucide-react'
 
 // ── Heatmap colour scale ──────────────────────────────────────────────────
 function heatColor(value: number, max: number): string {
@@ -78,11 +79,16 @@ function HeatCell({ org, value, max, onClick }: {
 
 // ── Main landing page ─────────────────────────────────────────────────────
 export default function LandingPage({ onNavigate }: {
-  onNavigate: (dashboard: 'dependabot' | 'secrets') => void
+  onNavigate: (dashboard: 'dependabot' | 'secrets' | 'dependencies') => void
 }) {
   const { data, isLoading } = useQuery({
     queryKey: ['overview'],
     queryFn: api.overview,
+  })
+
+  const { data: depsMetrics } = useQuery({
+    queryKey: ['deps-metrics'],
+    queryFn: depsApi.metrics,
   })
 
   if (isLoading) {
@@ -133,7 +139,7 @@ export default function LandingPage({ onNavigate }: {
       </div>
 
       {/* ── Quick nav cards ──────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 32 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14, marginBottom: 32 }}>
         <button onClick={() => onNavigate('dependabot')} style={{
           background: 'linear-gradient(135deg, rgba(59,130,246,0.1), rgba(59,130,246,0.02))',
           border: '1px solid rgba(59,130,246,0.25)', borderRadius: 10, padding: '20px 24px',
@@ -163,6 +169,22 @@ export default function LandingPage({ onNavigate }: {
           </div>
           <span style={{ color: '#9ca3af', fontSize: 13 }}>
             {sec ? `${sec.total.toLocaleString()} secrets · ${sec.open.toLocaleString()} open · ${sec.publicly_leaked.toLocaleString()} leaked` : 'No data loaded'}
+          </span>
+        </button>
+
+        <button onClick={() => onNavigate('dependencies')} style={{
+          background: 'linear-gradient(135deg, rgba(139,92,246,0.1), rgba(139,92,246,0.02))',
+          border: '1px solid rgba(139,92,246,0.25)', borderRadius: 10, padding: '20px 24px',
+          cursor: 'pointer', textAlign: 'left', transition: 'border-color 0.15s',
+        }}
+          onMouseEnter={e => e.currentTarget.style.borderColor = 'rgba(139,92,246,0.6)'}
+          onMouseLeave={e => e.currentTarget.style.borderColor = 'rgba(139,92,246,0.25)'}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <Package size={18} color="#8b5cf6" />
+            <span style={{ fontSize: 15, fontWeight: 700, color: '#f9fafb' }}>Dependencies Inventory →</span>
+          </div>
+          <span style={{ color: '#9ca3af', fontSize: 13 }}>
+            {depsMetrics ? `${depsMetrics.total_entries.toLocaleString()} entries · ${depsMetrics.unique_dependencies.toLocaleString()} unique deps · ${depsMetrics.repos.toLocaleString()} repos` : 'No data loaded'}
           </span>
         </button>
       </div>
