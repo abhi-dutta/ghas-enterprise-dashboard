@@ -14,6 +14,7 @@ from fastapi.responses import Response
 
 import engine
 import secrets_engine
+import deps_engine
 import auth
 
 app = FastAPI(title="GHAS Dashboard API", version="1.0.0")
@@ -391,4 +392,182 @@ def export_secrets_csv(
         content=data,
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=secret_scanning_alerts.csv"},
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ── DEPENDENCIES DASHBOARD ─────────────────────────────────────────────────
+# Routes for the GitHub Dependencies inventory dashboard.
+# Auto-loads github_dependencies*.csv from the project root on first access.
+# All endpoints require JWT auth and delegate to deps_engine.py for DuckDB SQL.
+# ═══════════════════════════════════════════════════════════════════════════
+import glob as _glob
+
+# Tracks the active .duckdb file path for the dependencies dashboard
+_active_deps_db: dict[str, str] = {}
+
+
+def _find_deps_csv() -> Optional[Path]:
+    """Auto-discover a github_dependencies*.csv in the project root directory."""
+    root = Path(__file__).parent.parent
+    matches = sorted(root.glob("github_dependencies*.csv"))
+    return matches[0] if matches else None
+
+
+def _get_deps_db() -> str:
+    """Return the active .duckdb path, auto-ingesting the default CSV if needed."""
+    db = _active_deps_db.get("path")
+    if not db or not Path(db).exists():
+        csv = _find_deps_csv()
+        if csv and csv.exists():
+            db = deps_engine.ingest(csv)
+            _active_deps_db["path"] = db
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail="No dependencies data loaded. POST /deps/upload first."
+            )
+    return db
+
+
+def _try_get_deps_db() -> Optional[str]:
+    """Like _get_deps_db() but returns None instead of raising on 404."""
+    try:
+        return _get_deps_db()
+    except HTTPException:
+        return None
+
+
+# ── Upload ─────────────────────────────────────────────────────────────────
+@app.post("/deps/upload")
+async def upload_deps_csv(file: UploadFile = File(...), _: str = Depends(auth.require_auth)):
+    """Upload a dependencies CSV file. Ingests into DuckDB and sets it as active."""
+    deps_engine.CACHE_DIR.mkdir(exist_ok=True)
+    tmp = deps_engine.CACHE_DIR / file.filename
+    tmp.write_bytes(await file.read())
+    db = deps_engine.ingest(tmp)
+    _active_deps_db["path"] = db
+    return {"status": "ok", "db": db}
+
+
+# ── Filter options ─────────────────────────────────────────────────────────
+@app.get("/deps/filter-options")
+def deps_filter_options(_: str = Depends(auth.require_auth)):
+    """Return distinct package file names and open-source values for sidebar filters."""
+    return deps_engine.filter_options(_get_deps_db())
+
+
+@app.get("/deps/filter-options/orgs")
+def deps_search_orgs(
+    q: str = Query("", description="Search prefix for organization names"),
+    limit: int = Query(50, ge=1, le=200),
+    _: str = Depends(auth.require_auth),
+):
+    """Typeahead search for organization names (ILIKE, capped at limit)."""
+    return deps_engine.search_orgs(_get_deps_db(), q, limit)
+
+
+@app.get("/deps/filter-options/repos")
+def deps_search_repos(
+    q: str = Query("", description="Search prefix for repository names"),
+    limit: int = Query(50, ge=1, le=200),
+    _: str = Depends(auth.require_auth),
+):
+    """Typeahead search for repository names (ILIKE, capped at limit)."""
+    return deps_engine.search_repos(_get_deps_db(), q, limit)
+
+
+# ── Metrics ────────────────────────────────────────────────────────────────
+@app.get("/deps/metrics")
+def deps_metrics(_: str = Depends(auth.require_auth)):
+    """Return aggregate summary metrics for the dependencies dashboard."""
+    return deps_engine.metrics(_get_deps_db())
+
+
+# ── Chart aggregations ────────────────────────────────────────────────────
+@app.get("/deps/charts/package-file")
+def deps_chart_package_file(_: str = Depends(auth.require_auth)):
+    """Dependency count grouped by package file (e.g. package.json, requirements.txt)."""
+    return deps_engine.agg_package_file(_get_deps_db())
+
+
+@app.get("/deps/charts/org")
+def deps_chart_org(_: str = Depends(auth.require_auth)):
+    """Top 20 organizations by total dependency count."""
+    return deps_engine.agg_org(_get_deps_db())
+
+
+@app.get("/deps/charts/repo")
+def deps_chart_repo(_: str = Depends(auth.require_auth)):
+    """Top 20 repositories by total dependency count."""
+    return deps_engine.agg_repo(_get_deps_db())
+
+
+@app.get("/deps/charts/top-dependencies")
+def deps_chart_top_deps(_: str = Depends(auth.require_auth)):
+    """Top 20 most commonly used dependencies across all repos."""
+    return deps_engine.agg_top_dependencies(_get_deps_db())
+
+
+@app.get("/deps/charts/open-source")
+def deps_chart_open_source(_: str = Depends(auth.require_auth)):
+    """Open source vs non-open source dependency breakdown."""
+    return deps_engine.agg_open_source(_get_deps_db())
+
+
+# ── Dependencies table (paginated) ────────────────────────────────────────
+@app.get("/deps/list")
+def get_deps_list(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=500),
+    search: str = Query(""),
+    org: Annotated[list[str], Query()] = [],
+    repo: Annotated[list[str], Query()] = [],
+    package_file: Annotated[list[str], Query()] = [],
+    is_open_source: Optional[str] = Query(None),
+    _: str = Depends(auth.require_auth),
+):
+    """Server-side paginated dependency list with filter support.
+
+    Only the requested page of rows is returned (LIMIT/OFFSET in DuckDB).
+    """
+    total, rows = deps_engine.deps_page(
+        _get_deps_db(), page, page_size,
+        search=search,
+        org=org or None,
+        repo=repo or None,
+        package_file=package_file or None,
+        is_open_source=is_open_source,
+    )
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": max(1, -(-total // page_size)),
+        "rows": rows,
+    }
+
+
+# ── CSV export ─────────────────────────────────────────────────────────────
+@app.get("/deps/list/export")
+def export_deps_csv(
+    search: str = Query(""),
+    org: Annotated[list[str], Query()] = [],
+    repo: Annotated[list[str], Query()] = [],
+    package_file: Annotated[list[str], Query()] = [],
+    is_open_source: Optional[str] = Query(None),
+    _: str = Depends(auth.require_auth),
+):
+    data = deps_engine.csv_export(
+        _get_deps_db(),
+        search=search,
+        org=org or None,
+        repo=repo or None,
+        package_file=package_file or None,
+        is_open_source=is_open_source,
+    )
+    return Response(
+        content=data,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=github_dependencies.csv"},
     )
