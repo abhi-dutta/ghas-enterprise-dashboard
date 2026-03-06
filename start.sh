@@ -6,16 +6,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND="$SCRIPT_DIR/backend"
 FRONTEND="$SCRIPT_DIR/frontend"
 
-# ── Backend: create venv if needed, install deps, start uvicorn ────────────
-echo "==> Setting up backend venv…"
-if [ ! -f "$BACKEND/.venv/bin/uvicorn" ]; then
-  python3 -m venv "$BACKEND/.venv"
-  "$BACKEND/.venv/bin/pip" install -r "$BACKEND/requirements.txt" -q
-fi
+# ── Backend: install deps using local Python, start uvicorn ────────────────
+echo "==> Installing backend dependencies…"
+pip install -r "$BACKEND/requirements.txt" -q
 
 echo "==> Starting FastAPI backend on http://0.0.0.0:8000 …"
 cd "$BACKEND"
-.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --reload &
+python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload &
 BACKEND_PID=$!
 
 # ── Frontend: install deps if needed, start Vite ──────────────────────────
