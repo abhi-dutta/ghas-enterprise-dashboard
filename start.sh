@@ -13,9 +13,9 @@ if [ ! -f "$BACKEND/.venv/bin/uvicorn" ]; then
   "$BACKEND/.venv/bin/pip" install -r "$BACKEND/requirements.txt" -q
 fi
 
-echo "==> Starting FastAPI backend on http://localhost:8000 …"
+echo "==> Starting FastAPI backend on http://0.0.0.0:8000 …"
 cd "$BACKEND"
-.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --reload &
+.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --reload &
 BACKEND_PID=$!
 
 # ── Frontend: install deps if needed, start Vite ──────────────────────────
