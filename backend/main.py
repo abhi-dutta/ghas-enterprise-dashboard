@@ -15,6 +15,7 @@ from fastapi.responses import Response
 import engine
 import secrets_engine
 import deps_engine
+import timeline_engine
 import auth
 
 app = FastAPI(title="GHAS Dashboard API", version="1.0.0")
@@ -31,16 +32,26 @@ app.post("/auth/login")(auth.login)
 app.get("/auth/me")(auth.me)
 
 # ── Resolve default DB file ────────────────────────────────────────────────
-_DEFAULT_CSV = Path(__file__).parent.parent / "dependabot_alerts.csv"
+# CHANGED: Replaced exact filename with glob pattern to match any
+# dependabot_alerts*.csv (e.g. dependabot_alerts.csv, dependabot_alerts_org1_20260311.csv)
 _active_db: dict[str, str] = {}   # simple global state per-process
+
+
+def _find_dependabot_csv() -> Optional[Path]:
+    """Auto-discover a dependabot_alerts*.csv in the project root directory.
+    If multiple files match, the first alphabetically is used."""
+    root = Path(__file__).parent.parent
+    matches = sorted(root.glob("dependabot_alerts*.csv"))
+    return matches[0] if matches else None
 
 
 def _get_db() -> str:
     db = _active_db.get("path")
     if not db or not Path(db).exists():
-        # Auto-ingest the default CSV if it exists
-        if _DEFAULT_CSV.exists():
-            db = engine.ingest(_DEFAULT_CSV)
+        # Auto-ingest the first matching CSV if one exists
+        csv = _find_dependabot_csv()
+        if csv and csv.exists():
+            db = engine.ingest(csv)
             _active_db["path"] = db
         else:
             raise HTTPException(
@@ -169,6 +180,19 @@ def health():
     return {"status": "ok"}
 
 
+# ── Timeline (persistent metrics history) ──────────────────────────────────
+@app.get("/timeline")
+def get_timeline(
+    source: Optional[str] = Query(None, description="Filter by source: 'dependabot' or 'secrets'"),
+    _: str = Depends(auth.require_auth),
+):
+    """Return historical metrics snapshots recorded on each CSV ingestion.
+
+    Each data point includes timestamp, source, total, open, critical, etc.
+    Used to render the vulnerability trend timeline on the Overview page."""
+    return timeline_engine.get_timeline(source=source)
+
+
 # ── Overview (landing page) ────────────────────────────────────────────────
 @app.get("/overview")
 def overview(_: str = Depends(auth.require_auth)):
@@ -271,15 +295,25 @@ def _try_get_secrets_db() -> Optional[str]:
 # ═══════════════════════════════════════════════════════════════════════════
 # ── SECRET SCANNING DASHBOARD ──────────────────────────────────────────────
 # ═══════════════════════════════════════════════════════════════════════════
-_DEFAULT_SECRETS_CSV = Path(__file__).parent.parent / "secret_scanning.csv"
+# CHANGED: Replaced exact filename "secret_scanning.csv" with glob pattern
+# to match any secret_scanning*.csv (e.g. secret_scanning.csv, secret_scanning_org1_20260311.csv)
 _active_secrets_db: dict[str, str] = {}
+
+
+def _find_secrets_csv() -> Optional[Path]:
+    """Auto-discover a secret_scanning*.csv in the project root directory.
+    If multiple files match, the first alphabetically is used."""
+    root = Path(__file__).parent.parent
+    matches = sorted(root.glob("secret_scanning*.csv"))
+    return matches[0] if matches else None
 
 
 def _get_secrets_db() -> str:
     db = _active_secrets_db.get("path")
     if not db or not Path(db).exists():
-        if _DEFAULT_SECRETS_CSV.exists():
-            db = secrets_engine.ingest(_DEFAULT_SECRETS_CSV)
+        csv = _find_secrets_csv()
+        if csv and csv.exists():
+            db = secrets_engine.ingest(csv)
             _active_secrets_db["path"] = db
         else:
             raise HTTPException(

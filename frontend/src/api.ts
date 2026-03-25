@@ -51,6 +51,24 @@ export interface OverviewData {
   orgs: OverviewOrgRow[]
 }
 
+/** A single timeline snapshot recorded when a CSV is ingested */
+export interface TimelineSnapshot {
+  timestamp: string       // ISO 8601 string
+  source: string          // 'dependabot' or 'secrets'
+  total: number
+  open: number
+  critical: number
+  high: number
+  medium: number
+  low: number
+  fixed: number
+  dismissed: number
+  leaked: number
+  bypassed: number
+  orgs: number
+  repos: number
+}
+
 export interface Filters {
   search:    string
   severity:  string[]
@@ -87,6 +105,7 @@ async function get<T>(path: string): Promise<T> {
 
 export const api = {
   overview:      () => get<OverviewData>('/overview'),
+  timeline:      () => get<TimelineSnapshot[]>('/timeline'),
   filterOptions: () => get<FilterOptions>('/filter-options'),
   searchOrgs:    (q: string) => get<string[]>(`/filter-options/orgs?q=${encodeURIComponent(q)}&limit=50`),
   metrics:       () => get<Metrics>('/metrics'),

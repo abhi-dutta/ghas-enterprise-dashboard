@@ -62,9 +62,10 @@ def db_path_for(csv_path: Path) -> Path:
 
 
 def _cleanup_old_dbs(keep: Path) -> None:
-    """Delete all .duckdb files in CACHE_DIR except the one we just created."""
+    """Delete all .duckdb files in CACHE_DIR except the one we just created
+    and the persistent timeline.duckdb."""
     for old in CACHE_DIR.glob("*.duckdb"):
-        if old.resolve() != keep.resolve():
+        if old.resolve() != keep.resolve() and old.name != "timeline.duckdb":
             try:
                 old.unlink()
                 _pool_key = str(old)
@@ -92,6 +93,13 @@ def ingest(csv_path: Path) -> str:
         else:
             _warm_col_cache(db)
             _cleanup_old_dbs(keep=db)
+            # Record timeline snapshot even for cached DBs (captures initial state on restart)
+            try:
+                import timeline_engine
+                m = metrics(str(db))
+                timeline_engine.record_snapshot("dependabot", _fingerprint(csv_path), m)
+            except Exception:
+                pass
             return str(db)
 
     conn = duckdb.connect(str(db))
@@ -131,6 +139,15 @@ def ingest(csv_path: Path) -> str:
 
     _warm_col_cache(db)
     _cleanup_old_dbs(keep=db)
+
+    # Record a timeline snapshot for this new ingestion
+    try:
+        import timeline_engine
+        m = metrics(str(db))
+        timeline_engine.record_snapshot("dependabot", _fingerprint(csv_path), m)
+    except Exception:
+        pass  # Timeline recording is best-effort; never block ingestion
+
     return str(db)
 
 

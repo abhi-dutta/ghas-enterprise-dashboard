@@ -3,25 +3,37 @@ import { api } from '../api'
 import { depsApi } from '../depsApi'
 import type { OverviewOrgRow } from '../api'
 import { Shield, KeyRound, AlertTriangle, Eye, Package } from 'lucide-react'
+import TimelineChart from './TimelineChart'
 
-// ── Heatmap colour scale ──────────────────────────────────────────────────
-function heatColor(value: number, max: number): string {
-  if (max === 0) return 'rgba(31,41,55,0.5)'
-  const t = Math.min(value / max, 1)
-  // green → yellow → orange → red
-  if (t < 0.25) return `rgba(74,222,128,${0.15 + t * 1.4})`
-  if (t < 0.5)  return `rgba(250,204,21,${0.2 + (t - 0.25) * 2})`
-  if (t < 0.75) return `rgba(249,115,22,${0.25 + (t - 0.5) * 2})`
-  return `rgba(239,68,68,${0.35 + (t - 0.75) * 2.6})`
-}
-
-function riskLevel(value: number, max: number): { label: string; color: string } {
-  if (max === 0) return { label: 'None', color: '#6b7280' }
-  const t = value / max
-  if (t >= 0.75) return { label: 'Critical', color: '#ef4444' }
-  if (t >= 0.5)  return { label: 'High', color: '#f97316' }
+// ── Risk assessment (severity-aware) ──────────────────────────────────────
+// Critical: any critical dependabot vuln OR any publicly leaked secret
+// High:     any high dependabot vuln OR any push-protection-bypassed secret
+// Medium/Low: based on open vulnerability volume relative to peers
+function orgRiskLevel(row: OverviewOrgRow, maxVulns: number): { label: string; color: string } {
+  if (row.dep_critical > 0 || row.sec_leaked > 0)
+    return { label: 'Critical', color: '#ef4444' }
+  if (row.dep_high > 0 || row.sec_bypassed > 0)
+    return { label: 'High', color: '#f97316' }
+  if (row.total_open === 0 && row.total_vulns === 0)
+    return { label: 'None', color: '#6b7280' }
+  // Volume-based for remaining
+  const t = maxVulns > 0 ? row.total_open / maxVulns : 0
   if (t >= 0.25) return { label: 'Medium', color: '#eab308' }
   return { label: 'Low', color: '#4ade80' }
+}
+
+function heatColorFromRisk(risk: { label: string; color: string }, value: number, max: number): string {
+  if (max === 0) return 'rgba(31,41,55,0.5)'
+  // Intensity based on volume, but base colour driven by risk level
+  const t = Math.min(value / max, 1)
+  const intensity = 0.25 + t * 0.65
+  switch (risk.label) {
+    case 'Critical': return `rgba(239,68,68,${intensity})`
+    case 'High':     return `rgba(249,115,22,${intensity})`
+    case 'Medium':   return `rgba(250,204,21,${intensity})`
+    case 'Low':      return `rgba(74,222,128,${intensity})`
+    default:         return 'rgba(31,41,55,0.5)'
+  }
 }
 
 // ── Stat card ─────────────────────────────────────────────────────────────
@@ -45,15 +57,15 @@ function BigStat({ icon, label, value, color, sub }: {
 }
 
 // ── Heatmap grid cell ─────────────────────────────────────────────────────
-function HeatCell({ org, value, max, onClick }: {
-  org: string; value: number; max: number; onClick?: () => void
+function HeatCell({ row, max, onClick }: {
+  row: OverviewOrgRow; max: number; onClick?: () => void
 }) {
-  const bg = heatColor(value, max)
-  const { label, color } = riskLevel(value, max)
+  const risk = orgRiskLevel(row, max)
+  const bg = heatColorFromRisk(risk, row.total_vulns, max)
   return (
     <div
       onClick={onClick}
-      title={`${org}: ${value.toLocaleString()} total vulnerabilities (${label} risk)`}
+      title={`${row.org}: ${row.total_vulns.toLocaleString()} total vulnerabilities (${risk.label} risk)`}
       style={{
         background: bg, borderRadius: 6, padding: '10px 12px',
         cursor: onClick ? 'pointer' : 'default',
@@ -64,14 +76,11 @@ function HeatCell({ org, value, max, onClick }: {
       onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.03)'; e.currentTarget.style.boxShadow = '0 4px 20px rgba(0,0,0,0.3)' }}
       onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.boxShadow = 'none' }}
     >
-      <div style={{ fontSize: 11, fontWeight: 600, color: '#e5e7eb', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        {org}
+      <div style={{ fontSize: 11, fontWeight: 600, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textShadow: '0 1px 3px rgba(0,0,0,0.6)' }}>
+        {row.org}
       </div>
-      <div style={{ fontSize: 20, fontWeight: 800, color, marginTop: 2 }}>
-        {value.toLocaleString()}
-      </div>
-      <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 1 }}>
-        {label} Risk
+      <div style={{ fontSize: 20, fontWeight: 800, color: '#fff', marginTop: 2, textShadow: '0 1px 4px rgba(0,0,0,0.7)' }}>
+        {row.total_vulns.toLocaleString()}
       </div>
     </div>
   )
@@ -189,6 +198,11 @@ export default function LandingPage({ onNavigate }: {
         </button>
       </div>
 
+      {/* ── Vulnerability Timeline ───────────────────────────────── */}
+      <div style={{ marginBottom: 32 }}>
+        <TimelineChart />
+      </div>
+
       {/* ── Organization Risk Heatmap ────────────────────────────── */}
       <div style={{ marginBottom: 28 }}>
         <h2 style={{ fontSize: 15, fontWeight: 700, color: '#e5e7eb', margin: '0 0 6px' }}>
@@ -222,7 +236,7 @@ export default function LandingPage({ onNavigate }: {
           gap: 8,
         }}>
           {orgs.slice(0, 40).map(row => (
-            <HeatCell key={row.org} org={row.org} value={row.total_vulns} max={maxVulns} />
+            <HeatCell key={row.org} row={row} max={maxVulns} />
           ))}
         </div>
       </div>
@@ -236,7 +250,7 @@ export default function LandingPage({ onNavigate }: {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ borderBottom: '1px solid #1f2937', background: '#0d1117' }}>
-                {['#', 'Organization', 'Total', 'Open', 'Dep Total', 'Dep Open', 'Critical', 'High', 'Secrets', 'Sec Open', 'Leaked', 'Push Bypassed', 'Repos', 'Risk'].map(h => (
+                {['#', 'Organization', 'Total', 'Open', 'Dep Total', 'Dep Open', 'Critical', 'High', 'Secrets', 'Sec Open', 'Leaked', 'Push Bypassed', 'Repos'].map(h => (
                   <th key={h} style={{
                     padding: '10px 10px', textAlign: h === 'Organization' ? 'left' : 'center',
                     color: '#6b7280', fontWeight: 600, fontSize: 11, whiteSpace: 'nowrap', letterSpacing: '0.03em',
@@ -246,7 +260,7 @@ export default function LandingPage({ onNavigate }: {
             </thead>
             <tbody>
               {orgs.map((row, i) => {
-                const risk = riskLevel(row.total_vulns, maxVulns)
+                const risk = orgRiskLevel(row, maxVulns)
                 return (
                   <OrgRow key={row.org} row={row} rank={i + 1} risk={risk} maxVulns={maxVulns} />
                 )
@@ -291,16 +305,6 @@ function OrgRow({ row, rank, risk, maxVulns }: {
       <td style={{ padding: '9px 10px', textAlign: 'center', color: row.sec_leaked > 0 ? '#ef4444' : '#6b7280', fontWeight: row.sec_leaked > 0 ? 700 : 400 }}>{row.sec_leaked}</td>
       <td style={{ padding: '9px 10px', textAlign: 'center', color: row.sec_bypassed > 0 ? '#f97316' : '#6b7280', fontWeight: row.sec_bypassed > 0 ? 700 : 400 }}>{row.sec_bypassed}</td>
       <td style={{ padding: '9px 10px', textAlign: 'center', color: '#9ca3af' }}>{row.repos}</td>
-      <td style={{ padding: '9px 10px', textAlign: 'center' }}>
-        <span style={{
-          padding: '2px 10px', borderRadius: 99, fontSize: 11, fontWeight: 700,
-          color: risk.color,
-          background: risk.color + '18',
-          border: `1px solid ${risk.color}40`,
-        }}>
-          {risk.label}
-        </span>
-      </td>
     </tr>
   )
 }
