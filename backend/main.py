@@ -209,7 +209,7 @@ def overview(_: str = Depends(auth.require_auth)):
 
     if dep_db:
         conn = engine.get_conn(dep_db)
-        for row in conn.execute(f"""
+        sql = f"""
             SELECT "Organization_Name" AS org,
                    count(*) AS total,
                    count(*) FILTER (WHERE "State"='open') AS open,
@@ -219,7 +219,8 @@ def overview(_: str = Depends(auth.require_auth)):
             FROM {engine.TABLE}
             WHERE "Organization_Name" IS NOT NULL
             GROUP BY 1
-        """).fetchall():
+        """
+        for row in conn.execute(sql).fetchall():
             dep_orgs[row[0]] = {
                 "dep_total": row[1], "dep_open": row[2],
                 "dep_critical": row[3], "dep_high": row[4], "dep_repos": row[5],
@@ -227,7 +228,7 @@ def overview(_: str = Depends(auth.require_auth)):
 
     if sec_db:
         conn = secrets_engine.get_conn(sec_db)
-        for row in conn.execute(f"""
+        sql = f"""
             SELECT "Organization_Name" AS org,
                    count(*) AS total,
                    count(*) FILTER (WHERE "State"='open') AS open,
@@ -237,7 +238,8 @@ def overview(_: str = Depends(auth.require_auth)):
             FROM {secrets_engine.TABLE}
             WHERE "Organization_Name" IS NOT NULL
             GROUP BY 1
-        """).fetchall():
+        """
+        for row in conn.execute(sql).fetchall():
             sec_orgs[row[0]] = {
                 "sec_total": row[1], "sec_open": row[2],
                 "sec_leaked": row[3], "sec_bypassed": row[4], "sec_repos": row[5],
