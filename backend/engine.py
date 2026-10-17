@@ -85,7 +85,8 @@ def ingest(csv_path: Path) -> str:
         # Verify the cached DB actually contains our table
         try:
             conn = duckdb.connect(str(db), read_only=True)
-            conn.execute(f"SELECT 1 FROM {TABLE} LIMIT 1")
+            sql = f"SELECT 1 FROM {TABLE} LIMIT 1"
+            conn.execute(sql)
             conn.close()
         except Exception:
             # Stale/corrupt cache — delete and re-ingest
@@ -104,7 +105,7 @@ def ingest(csv_path: Path) -> str:
 
     conn = duckdb.connect(str(db))
     try:
-        conn.execute(f"""
+        sql = f"""
             CREATE TABLE {TABLE} AS
             SELECT * FROM read_csv_auto(
                 '{csv_path}',
@@ -112,28 +113,32 @@ def ingest(csv_path: Path) -> str:
                 all_varchar=false,
                 ignore_errors=true
             )
-        """)
+        """
+        conn.execute(sql)
         existing = _col_set(conn)
         for col in DATE_COLS:
             if col in existing:
-                dtype = conn.execute(
+                sql = (
                     f"SELECT data_type FROM information_schema.columns "
                     f"WHERE table_name='{TABLE}' AND column_name='{col}'"
-                ).fetchone()[0]
+                )
+                dtype = conn.execute(sql).fetchone()[0]
                 if "VARCHAR" in dtype.upper():
-                    conn.execute(f"""
+                    sql = f"""
                         ALTER TABLE {TABLE}
                         ALTER COLUMN "{col}"
                         SET DATA TYPE TIMESTAMP
                         USING TRY_CAST("{col}" AS TIMESTAMP)
-                    """)
+                    """
+                    conn.execute(sql)
         for col in ["Severity", "State", "Dependency_Package_Ecosystem",
                     "Organization_Name", "Repository_Name", "CVE_ID"]:
             if col in existing:
-                conn.execute(
+                sql = (
                     f'CREATE INDEX IF NOT EXISTS idx_{col.lower().replace(" ","_")} '
                     f'ON {TABLE} ("{col}")'
                 )
+                conn.execute(sql)
     finally:
         conn.close()
 
@@ -152,9 +157,8 @@ def ingest(csv_path: Path) -> str:
 
 
 def _col_set(conn) -> set[str]:
-    return {r[0] for r in conn.execute(
-        f"SELECT column_name FROM information_schema.columns WHERE table_name='{TABLE}'"
-    ).fetchall()}
+    sql = f"SELECT column_name FROM information_schema.columns WHERE table_name='{TABLE}'"
+    return {r[0] for r in conn.execute(sql).fetchall()}
 
 
 def _warm_col_cache(db: Path):
@@ -237,9 +241,8 @@ def filter_options(db_file: str) -> dict:
         ("states", "State"),
         ("ecosystems", "Dependency_Package_Ecosystem"),
     ]:
-        rows = conn.execute(
-            f'SELECT DISTINCT "{col}" FROM {TABLE} WHERE "{col}" IS NOT NULL ORDER BY "{col}"'
-        ).fetchall()
+        sql = f'SELECT DISTINCT "{col}" FROM {TABLE} WHERE "{col}" IS NOT NULL ORDER BY "{col}"'
+        rows = conn.execute(sql).fetchall()
         result[key] = [str(r[0]) for r in rows]
     return result
 
@@ -248,26 +251,26 @@ def search_orgs(db_file: str, q: str = "", limit: int = 50) -> list[str]:
     """Return org names matching a prefix/substring, capped at `limit`."""
     conn = get_conn(db_file)
     if q.strip():
-        rows = conn.execute(
+        sql = (
             f'SELECT DISTINCT "Organization_Name" FROM {TABLE} '
             f'WHERE "Organization_Name" IS NOT NULL '
             f'AND "Organization_Name" ILIKE ? '
-            f'ORDER BY "Organization_Name" LIMIT ?',
-            [f"%{q}%", limit],
-        ).fetchall()
+            f'ORDER BY "Organization_Name" LIMIT ?'
+        )
+        rows = conn.execute(sql, [f"%{q}%", limit]).fetchall()
     else:
-        rows = conn.execute(
+        sql = (
             f'SELECT DISTINCT "Organization_Name" FROM {TABLE} '
             f'WHERE "Organization_Name" IS NOT NULL '
-            f'ORDER BY "Organization_Name" LIMIT ?',
-            [limit],
-        ).fetchall()
+            f'ORDER BY "Organization_Name" LIMIT ?'
+        )
+        rows = conn.execute(sql, [limit]).fetchall()
     return [str(r[0]) for r in rows]
 
 
 def metrics(db_file: str) -> dict:
     conn = get_conn(db_file)
-    row = conn.execute(f"""
+    sql = f"""
         SELECT
             count(*),
             count(*) FILTER (WHERE "State"='open'),
@@ -282,7 +285,8 @@ def metrics(db_file: str) -> dict:
             count(DISTINCT "Organization_Name"),
             count(DISTINCT "CVE_ID")
         FROM {TABLE}
-    """).fetchone()
+    """
+    row = conn.execute(sql).fetchone()
     keys = ["total","open","fixed","dismissed","critical","high","medium",
             "low","avg_cvss","repos","orgs","cves"]
     return {
@@ -296,59 +300,63 @@ def alert_page(db_file: str, page: int, page_size: int,
                ) -> tuple[int, list[dict]]:
     conn = get_conn(db_file)
     where, params = where_clause(search, severity, state, ecosystem, org)
-    total = conn.execute(f"SELECT count(*) FROM {TABLE} {where}", params).fetchone()[0]
+    sql = f"SELECT count(*) FROM {TABLE} {where}"
+    total = conn.execute(sql, params).fetchone()[0]
     cols = display_col_sql(db_file)
     offset = (page - 1) * page_size
-    df: pd.DataFrame = conn.execute(
-        f"SELECT {cols} FROM {TABLE} {where} LIMIT ? OFFSET ?",
-        params + [page_size, offset],
-    ).fetchdf()
+    sql = f"SELECT {cols} FROM {TABLE} {where} LIMIT ? OFFSET ?"
+    df: pd.DataFrame = conn.execute(sql, params + [page_size, offset]).fetchdf()
     # Convert NaT / NaN / Inf to None for JSON serialisation
     return total, _clean_records(df)
 
 
 def agg_severity(db_file: str) -> list[dict]:
     conn = get_conn(db_file)
-    return _clean_records(conn.execute(
+    sql = (
         f'SELECT "Severity", count(*) AS "count" FROM {TABLE} '
         f'GROUP BY "Severity" ORDER BY "count" DESC'
-    ).fetchdf())
+    )
+    return _clean_records(conn.execute(sql).fetchdf())
 
 
 def agg_state(db_file: str) -> list[dict]:
     conn = get_conn(db_file)
-    return _clean_records(conn.execute(
+    sql = (
         f'SELECT "State", count(*) AS "count" FROM {TABLE} '
         f'GROUP BY "State" ORDER BY "count" DESC'
-    ).fetchdf())
+    )
+    return _clean_records(conn.execute(sql).fetchdf())
 
 
 def agg_ecosystem(db_file: str) -> list[dict]:
     conn = get_conn(db_file)
-    return _clean_records(conn.execute(
+    sql = (
         f'SELECT "Dependency_Package_Ecosystem" AS "ecosystem", count(*) AS "count" '
         f'FROM {TABLE} GROUP BY 1 ORDER BY "count" DESC LIMIT 10'
-    ).fetchdf())
+    )
+    return _clean_records(conn.execute(sql).fetchdf())
 
 
 def agg_org(db_file: str) -> list[dict]:
     conn = get_conn(db_file)
-    return _clean_records(conn.execute(f"""
+    sql = f"""
         SELECT "Organization_Name" AS "org",
                count(*) AS "total",
                count(*) FILTER (WHERE "State"='open') AS "open",
                count(DISTINCT "Repository_Name") AS "repos"
         FROM {TABLE} GROUP BY 1 ORDER BY "total" DESC LIMIT 20
-    """).fetchdf())
+    """
+    return _clean_records(conn.execute(sql).fetchdf())
 
 
 def agg_trend(db_file: str) -> list[dict]:
     conn = get_conn(db_file)
-    df = conn.execute(f"""
+    sql = f"""
         SELECT CAST("Created_At" AS DATE) AS "date", count(*) AS "count"
         FROM {TABLE} WHERE "Created_At" IS NOT NULL
         GROUP BY 1 ORDER BY 1
-    """).fetchdf()
+    """
+    df = conn.execute(sql).fetchdf()
     df["date"] = df["date"].astype(str)
     return _clean_records(df)
 
@@ -357,7 +365,8 @@ def csv_export(db_file: str, search="", severity=None, state=None,
                ecosystem=None, org=None) -> bytes:
     conn = get_conn(db_file)
     where, params = where_clause(search, severity, state, ecosystem, org)
-    df = conn.execute(f"SELECT * FROM {TABLE} {where}", params).fetchdf()
+    sql = f"SELECT * FROM {TABLE} {where}"
+    df = conn.execute(sql, params).fetchdf()
     buf = io.BytesIO()
     df.to_csv(buf, index=False)
     return buf.getvalue()

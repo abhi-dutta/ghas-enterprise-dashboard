@@ -119,7 +119,8 @@ def ingest(csv_path: Path) -> str:
         # Verify the cached DB actually contains our table
         try:
             conn = duckdb.connect(str(db), read_only=True)
-            conn.execute(f"SELECT 1 FROM {TABLE} LIMIT 1")
+            sql = f"SELECT 1 FROM {TABLE} LIMIT 1"
+            conn.execute(sql)
             conn.close()
         except Exception:
             # Stale or corrupt cache — delete and re-ingest below
@@ -134,13 +135,15 @@ def ingest(csv_path: Path) -> str:
     try:
         # Read everything as string to avoid DuckDB's CSV type-sniffing issues
         df = pd.read_csv(str(csv_path), dtype=str, keep_default_na=False)
-        conn.execute(f"CREATE TABLE {TABLE} AS SELECT * FROM df")
+        sql = f"CREATE TABLE {TABLE} AS SELECT * FROM df"
+        conn.execute(sql)
         existing = _col_set(conn)
 
         # Replace empty strings with NULL for cleaner queries
         for col in existing:
             try:
-                conn.execute(f'UPDATE {TABLE} SET "{col}" = NULL WHERE "{col}" = \'\'')
+                sql = f'UPDATE {TABLE} SET "{col}" = NULL WHERE "{col}" = \'\''
+                conn.execute(sql)
             except Exception:
                 pass
 
@@ -161,9 +164,8 @@ def ingest(csv_path: Path) -> str:
 
 def _col_set(conn) -> set[str]:
     """Return the set of column names for the dependencies table."""
-    return {r[0] for r in conn.execute(
-        f"SELECT column_name FROM information_schema.columns WHERE table_name='{TABLE}'"
-    ).fetchall()}
+    sql = f"SELECT column_name FROM information_schema.columns WHERE table_name='{TABLE}'"
+    return {r[0] for r in conn.execute(sql).fetchall()}
 
 
 def _warm_col_cache(db: Path):
@@ -269,9 +271,8 @@ def filter_options(db_file: str) -> dict:
         ("package_files", "package_name"),
         ("is_open_source", "is_open_source"),
     ]:
-        rows = conn.execute(
-            f'SELECT DISTINCT "{col}" FROM {TABLE} WHERE "{col}" IS NOT NULL ORDER BY "{col}"'
-        ).fetchall()
+        sql = f'SELECT DISTINCT "{col}" FROM {TABLE} WHERE "{col}" IS NOT NULL ORDER BY "{col}"'
+        rows = conn.execute(sql).fetchall()
         result[key] = [str(r[0]) for r in rows]
     return result
 
@@ -333,7 +334,7 @@ def metrics(db_file: str) -> dict:
 
     All values are integers; NaN/None are coerced to 0."""
     conn = get_conn(db_file)
-    row = conn.execute(f"""
+    sql = f"""
         SELECT
             count(*),
             count(DISTINCT "dependency_name"),
@@ -343,7 +344,8 @@ def metrics(db_file: str) -> dict:
             count(*) FILTER (WHERE LOWER("is_open_source") = 'true'),
             count(*) FILTER (WHERE LOWER("is_open_source") != 'true')
         FROM {TABLE}
-    """).fetchone()
+    """
+    row = conn.execute(sql).fetchone()
     keys = [
         "total_entries", "unique_dependencies", "repos", "orgs",
         "package_files", "open_source", "not_open_source",
@@ -366,11 +368,13 @@ def deps_page(db_file: str, page: int, page_size: int,
         Tuple of (total matching row count, list of row dicts for current page)."""
     conn = get_conn(db_file)
     where, params = where_clause(search, org, repo, package_file, is_open_source)
-    total = conn.execute(f"SELECT count(*) FROM {TABLE} {where}", params).fetchone()[0]
+    sql = f"SELECT count(*) FROM {TABLE} {where}"
+    total = conn.execute(sql, params).fetchone()[0]
     cols = display_col_sql(db_file)
     offset = (page - 1) * page_size
+    sql = f"SELECT {cols} FROM {TABLE} {where} ORDER BY \"org_name\", \"repo_name\", \"dependency_name\" LIMIT ? OFFSET ?"
     df: pd.DataFrame = conn.execute(
-        f"SELECT {cols} FROM {TABLE} {where} ORDER BY \"org_name\", \"repo_name\", \"dependency_name\" LIMIT ? OFFSET ?",
+        sql,
         params + [page_size, offset],
     ).fetchdf()
     return total, _clean_records(df)
@@ -393,13 +397,14 @@ def agg_org(db_file: str) -> list[dict]:
 
     Returns: org, total_deps, unique_deps, repos per org."""
     conn = get_conn(db_file)
-    return _clean_records(conn.execute(f"""
+    sql = f"""
         SELECT "org_name" AS "org",
                count(*) AS "total_deps",
                count(DISTINCT "dependency_name") AS "unique_deps",
                count(DISTINCT "repo_name") AS "repos"
         FROM {TABLE} GROUP BY 1 ORDER BY "total_deps" DESC LIMIT 20
-    """).fetchdf())
+    """
+    return _clean_records(conn.execute(sql).fetchdf())
 
 
 def agg_repo(db_file: str) -> list[dict]:
@@ -407,13 +412,14 @@ def agg_repo(db_file: str) -> list[dict]:
 
     Returns: repo, org, total_deps, unique_deps per repo."""
     conn = get_conn(db_file)
-    return _clean_records(conn.execute(f"""
+    sql = f"""
         SELECT "repo_name" AS "repo",
                "org_name" AS "org",
                count(*) AS "total_deps",
                count(DISTINCT "dependency_name") AS "unique_deps"
         FROM {TABLE} GROUP BY 1, 2 ORDER BY "total_deps" DESC LIMIT 20
-    """).fetchdf())
+    """
+    return _clean_records(conn.execute(sql).fetchdf())
 
 
 def agg_top_dependencies(db_file: str) -> list[dict]:
@@ -422,12 +428,13 @@ def agg_top_dependencies(db_file: str) -> list[dict]:
     Returns: dependency name, repo_count (how many repo×package_file entries
     use it), and distinct repos count."""
     conn = get_conn(db_file)
-    return _clean_records(conn.execute(f"""
+    sql = f"""
         SELECT "dependency_name" AS "dependency",
                count(*) AS "repo_count",
                count(DISTINCT "repo_name") AS "repos"
         FROM {TABLE} GROUP BY 1 ORDER BY "repo_count" DESC LIMIT 20
-    """).fetchdf())
+    """
+    return _clean_records(conn.execute(sql).fetchdf())
 
 
 def agg_open_source(db_file: str) -> list[dict]:
@@ -451,7 +458,8 @@ def csv_export(db_file: str, search="", org=None, repo=None,
     (no pagination). Used by the /deps/list/export endpoint."""
     conn = get_conn(db_file)
     where, params = where_clause(search, org, repo, package_file, is_open_source)
-    df = conn.execute(f"SELECT * FROM {TABLE} {where}", params).fetchdf()
+    sql = f"SELECT * FROM {TABLE} {where}"
+    df = conn.execute(sql, params).fetchdf()
     buf = io.BytesIO()
     df.to_csv(buf, index=False)
     return buf.getvalue()

@@ -78,7 +78,8 @@ def ingest(csv_path: Path) -> str:
         # Verify the cached DB actually contains our table
         try:
             conn = duckdb.connect(str(db), read_only=True)
-            conn.execute(f"SELECT 1 FROM {TABLE} LIMIT 1")
+            sql = f"SELECT 1 FROM {TABLE} LIMIT 1"
+            conn.execute(sql)
             conn.close()
         except Exception:
             # Stale/corrupt cache — delete and re-ingest
@@ -100,12 +101,14 @@ def ingest(csv_path: Path) -> str:
         # Use pandas for CSV reading to avoid DuckDB's sniffing issues,
         # then register the DataFrame as a DuckDB table.
         df = pd.read_csv(str(csv_path), dtype=str, keep_default_na=False)
-        conn.execute(f"CREATE TABLE {TABLE} AS SELECT * FROM df")
+        sql = f"CREATE TABLE {TABLE} AS SELECT * FROM df"
+        conn.execute(sql)
         existing = _col_set(conn)
         # Replace empty strings with NULL (pandas read everything as str)
         for col in existing:
             try:
-                conn.execute(f'UPDATE {TABLE} SET "{col}" = NULL WHERE "{col}" = \'\'')
+                sql = f'UPDATE {TABLE} SET "{col}" = NULL WHERE "{col}" = \'\''
+                conn.execute(sql)
             except Exception:
                 pass
         # Cast numeric columns from VARCHAR
@@ -113,12 +116,13 @@ def ingest(csv_path: Path) -> str:
                      "Location_Start_Column", "Location_End_Column"]:
             if col in existing:
                 try:
-                    conn.execute(f"""
+                    sql = f"""
                         ALTER TABLE {TABLE}
                         ALTER COLUMN "{col}"
                         SET DATA TYPE BIGINT
                         USING TRY_CAST("{col}" AS BIGINT)
-                    """)
+                    """
+                    conn.execute(sql)
                 except Exception:
                     pass
         for col in DATE_COLS:
@@ -128,12 +132,13 @@ def ingest(csv_path: Path) -> str:
                     f"WHERE table_name='{TABLE}' AND column_name='{col}'"
                 ).fetchone()[0]
                 if "VARCHAR" in dtype.upper():
-                    conn.execute(f"""
+                    sql = f"""
                         ALTER TABLE {TABLE}
                         ALTER COLUMN "{col}"
                         SET DATA TYPE TIMESTAMP
                         USING TRY_CAST("{col}" AS TIMESTAMP)
-                    """)
+                    """
+                    conn.execute(sql)
         for col in ["Secret_Type", "State", "Validity", "Resolution",
                      "Organization_Name", "Repository_Name"]:
             if col in existing:
@@ -159,9 +164,8 @@ def ingest(csv_path: Path) -> str:
 
 
 def _col_set(conn) -> set[str]:
-    return {r[0] for r in conn.execute(
-        f"SELECT column_name FROM information_schema.columns WHERE table_name='{TABLE}'"
-    ).fetchall()}
+    sql = f"SELECT column_name FROM information_schema.columns WHERE table_name='{TABLE}'"
+    return {r[0] for r in conn.execute(sql).fetchall()}
 
 
 def _warm_col_cache(db: Path):
@@ -240,9 +244,8 @@ def filter_options(db_file: str) -> dict:
         ("states", "State"),
         ("validities", "Validity"),
     ]:
-        rows = conn.execute(
-            f'SELECT DISTINCT "{col}" FROM {TABLE} WHERE "{col}" IS NOT NULL ORDER BY "{col}"'
-        ).fetchall()
+        sql = f'SELECT DISTINCT "{col}" FROM {TABLE} WHERE "{col}" IS NOT NULL ORDER BY "{col}"'
+        rows = conn.execute(sql).fetchall()
         result[key] = [str(r[0]) for r in rows]
     return result
 
@@ -269,7 +272,7 @@ def search_orgs(db_file: str, q: str = "", limit: int = 50) -> list[str]:
 
 def metrics(db_file: str) -> dict:
     conn = get_conn(db_file)
-    row = conn.execute(f"""
+    sql = f"""
         SELECT
             count(*),
             count(*) FILTER (WHERE "State"='open'),
@@ -285,7 +288,8 @@ def metrics(db_file: str) -> dict:
             count(DISTINCT "Repository_Name"),
             count(DISTINCT "Organization_Name")
         FROM {TABLE}
-    """).fetchone()
+    """
+    row = conn.execute(sql).fetchone()
     keys = ["total", "open", "resolved", "active", "inactive", "unknown",
             "push_bypassed", "publicly_leaked", "secret_types", "repos", "orgs"]
     return {
@@ -299,11 +303,13 @@ def alert_page(db_file: str, page: int, page_size: int,
                ) -> tuple[int, list[dict]]:
     conn = get_conn(db_file)
     where, params = where_clause(search, secret_type, state, validity, org)
-    total = conn.execute(f"SELECT count(*) FROM {TABLE} {where}", params).fetchone()[0]
+    sql = f"SELECT count(*) FROM {TABLE} {where}"
+    total = conn.execute(sql, params).fetchone()[0]
     cols = display_col_sql(db_file)
     offset = (page - 1) * page_size
+    sql = f"SELECT {cols} FROM {TABLE} {where} LIMIT ? OFFSET ?"
     df: pd.DataFrame = conn.execute(
-        f"SELECT {cols} FROM {TABLE} {where} LIMIT ? OFFSET ?",
+        sql,
         params + [page_size, offset],
     ).fetchdf()
     return total, _clean_records(df)
@@ -336,22 +342,24 @@ def agg_validity(db_file: str) -> list[dict]:
 
 def agg_org(db_file: str) -> list[dict]:
     conn = get_conn(db_file)
-    return _clean_records(conn.execute(f"""
+    sql = f"""
         SELECT "Organization_Name" AS "org",
                count(*) AS "total",
                count(*) FILTER (WHERE "State"='open') AS "open",
                count(DISTINCT "Repository_Name") AS "repos"
         FROM {TABLE} GROUP BY 1 ORDER BY "total" DESC LIMIT 20
-    """).fetchdf())
+    """
+    return _clean_records(conn.execute(sql).fetchdf())
 
 
 def agg_trend(db_file: str) -> list[dict]:
     conn = get_conn(db_file)
-    df = conn.execute(f"""
+    sql = f"""
         SELECT CAST("Created_At" AS DATE) AS "date", count(*) AS "count"
         FROM {TABLE} WHERE "Created_At" IS NOT NULL
         GROUP BY 1 ORDER BY 1
-    """).fetchdf()
+    """
+    df = conn.execute(sql).fetchdf()
     df["date"] = df["date"].astype(str)
     return _clean_records(df)
 
@@ -360,7 +368,8 @@ def csv_export(db_file: str, search="", secret_type=None, state=None,
                validity=None, org=None) -> bytes:
     conn = get_conn(db_file)
     where, params = where_clause(search, secret_type, state, validity, org)
-    df = conn.execute(f"SELECT * FROM {TABLE} {where}", params).fetchdf()
+    sql = f"SELECT * FROM {TABLE} {where}"
+    df = conn.execute(sql, params).fetchdf()
     buf = io.BytesIO()
     df.to_csv(buf, index=False)
     return buf.getvalue()

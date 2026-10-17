@@ -78,7 +78,8 @@ def _ensure_table() -> None:
     if TIMELINE_DB.exists():
         try:
             rconn = duckdb.connect(str(TIMELINE_DB), read_only=True)
-            rconn.execute(f"SELECT 1 FROM {TABLE} LIMIT 1")
+            sql = f"SELECT 1 FROM {TABLE} LIMIT 1"
+            rconn.execute(sql)
             rconn.close()
             return  # Table exists — nothing to do
         except Exception:
@@ -87,7 +88,7 @@ def _ensure_table() -> None:
     with _write_lock:
         conn = duckdb.connect(str(TIMELINE_DB))
         try:
-            conn.execute(f"""
+            sql = f"""
                 CREATE TABLE IF NOT EXISTS {TABLE} (
                     id            INTEGER PRIMARY KEY,
                     timestamp     TIMESTAMP NOT NULL,
@@ -106,12 +107,14 @@ def _ensure_table() -> None:
                     orgs          INTEGER DEFAULT 0,
                     repos         INTEGER DEFAULT 0
                 )
-            """)
+            """
+            conn.execute(sql)
             # Create a unique index to prevent duplicate snapshots for the same CSV
-            conn.execute(f"""
+            sql = f"""
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_timeline_dedup
                 ON {TABLE} (source, fingerprint)
-            """)
+            """
+            conn.execute(sql)
         finally:
             conn.close()
         # Invalidate any cached read connections so they pick up the new table
@@ -151,23 +154,22 @@ def record_snapshot(source: str, fingerprint: str, metrics_dict: dict) -> bool:
         conn = duckdb.connect(str(TIMELINE_DB))
         try:
             # Check if this fingerprint already has a snapshot
-            existing = conn.execute(
-                f'SELECT id FROM {TABLE} WHERE source = ? AND fingerprint = ?',
-                [source, fingerprint]
-            ).fetchone()
+            sql = f'SELECT id FROM {TABLE} WHERE source = ? AND fingerprint = ?'
+            existing = conn.execute(sql, [source, fingerprint]).fetchone()
             if existing:
                 return False  # Already recorded — skip duplicate
 
             # Get next ID
-            max_id = conn.execute(f"SELECT COALESCE(MAX(id), 0) FROM {TABLE}").fetchone()[0]
+            sql = f"SELECT COALESCE(MAX(id), 0) FROM {TABLE}"
+            max_id = conn.execute(sql).fetchone()[0]
             next_id = max_id + 1
 
-            conn.execute(
-                f"""INSERT INTO {TABLE}
+            sql = f"""INSERT INTO {TABLE}
                     (id, timestamp, source, fingerprint,
                      total, open, critical, high, medium, low,
                      fixed, dismissed, leaked, bypassed, orgs, repos)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+            conn.execute(sql,
                 [next_id, now, source, fingerprint,
                  total, open_, critical, high, medium, low,
                  fixed, dismissed, leaked, bypassed, orgs, repos]
@@ -207,14 +209,11 @@ def get_timeline(source: Optional[str] = None) -> list[dict]:
 
     try:
         if source:
-            df = conn.execute(
-                f'SELECT * FROM {TABLE} WHERE source = ? ORDER BY timestamp ASC',
-                [source]
-            ).fetchdf()
+            sql = f'SELECT * FROM {TABLE} WHERE source = ? ORDER BY timestamp ASC'
+            df = conn.execute(sql, [source]).fetchdf()
         else:
-            df = conn.execute(
-                f'SELECT * FROM {TABLE} ORDER BY timestamp ASC'
-            ).fetchdf()
+            sql = f'SELECT * FROM {TABLE} ORDER BY timestamp ASC'
+            df = conn.execute(sql).fetchdf()
         return _clean_records(df)
     except Exception:
         # Table might not exist yet
