@@ -47,6 +47,29 @@ _lock = threading.Lock()
 # Maps db_file path → list of valid display column names (warmed on first access)
 _col_cache: dict[str, list[str]] = {}
 
+# Frozenset allowlists for dynamic SQL identifiers (table/column names
+# cannot be parameterised with ? placeholders; allowlist validation is
+# the standard defence against SQL injection for identifiers).
+_ALLOWED_TABLES: frozenset[str] = frozenset({TABLE})
+_ALLOWED_COLUMNS: frozenset[str] = frozenset({
+    "org_name", "repo_name", "package_name",
+    "dependency_name", "is_open_source",
+})
+
+
+def _validate_table(name: str) -> str:
+    """Return *name* unchanged if it is an allowed table identifier, else raise."""
+    if name not in _ALLOWED_TABLES:
+        raise ValueError(f"Disallowed table name: {name!r}")
+    return name
+
+
+def _validate_column(name: str) -> str:
+    """Return *name* unchanged if it is an allowed column identifier, else raise."""
+    if name not in _ALLOWED_COLUMNS:
+        raise ValueError(f"Disallowed column name: {name!r}")
+    return name
+
 
 def get_conn(db_file: str) -> duckdb.DuckDBPyConnection:
     """Return a per-thread read-only DuckDB connection for the given db file.
@@ -76,7 +99,7 @@ def _fingerprint(p: Path) -> str:
     Two uploads of the same file with identical content produce the same
     fingerprint and reuse the cached .duckdb, avoiding redundant ingestion."""
     s = p.stat()
-    return hashlib.md5(f"{p.name}-{s.st_size}-{s.st_mtime_ns}".encode()).hexdigest()[:12]
+    return hashlib.sha256(f"{p.name}-{s.st_size}-{s.st_mtime_ns}".encode()).hexdigest()[:12]
 
 
 def db_path_for(csv_path: Path) -> Path:
@@ -119,7 +142,7 @@ def ingest(csv_path: Path) -> str:
         # Verify the cached DB actually contains our table
         try:
             conn = duckdb.connect(str(db), read_only=True)
-            conn.execute(f"SELECT 1 FROM {TABLE} LIMIT 1")
+            conn.execute(f"SELECT 1 FROM {_validate_table(TABLE)} LIMIT 1")
             conn.close()
         except Exception:
             # Stale or corrupt cache — delete and re-ingest below
@@ -134,13 +157,16 @@ def ingest(csv_path: Path) -> str:
     try:
         # Read everything as string to avoid DuckDB's CSV type-sniffing issues
         df = pd.read_csv(str(csv_path), dtype=str, keep_default_na=False)
-        conn.execute(f"CREATE TABLE {TABLE} AS SELECT * FROM df")
+        conn.execute(f"CREATE TABLE {_validate_table(TABLE)} AS SELECT * FROM df")
         existing = _col_set(conn)
 
         # Replace empty strings with NULL for cleaner queries
         for col in existing:
             try:
-                conn.execute(f'UPDATE {TABLE} SET "{col}" = NULL WHERE "{col}" = \'\'')
+                conn.execute(
+                    f'UPDATE {_validate_table(TABLE)} SET "{_validate_column(col)}" = NULL '
+                    f'WHERE "{_validate_column(col)}" = \'\''
+                )
             except Exception:
                 pass
 
@@ -162,7 +188,8 @@ def ingest(csv_path: Path) -> str:
 def _col_set(conn) -> set[str]:
     """Return the set of column names for the dependencies table."""
     return {r[0] for r in conn.execute(
-        f"SELECT column_name FROM information_schema.columns WHERE table_name='{TABLE}'"
+        "SELECT column_name FROM information_schema.columns WHERE table_name = ?",
+        [TABLE],
     ).fetchall()}
 
 
@@ -269,8 +296,10 @@ def filter_options(db_file: str) -> dict:
         ("package_files", "package_name"),
         ("is_open_source", "is_open_source"),
     ]:
+        vcol = _validate_column(col)
+        vtbl = _validate_table(TABLE)
         rows = conn.execute(
-            f'SELECT DISTINCT "{col}" FROM {TABLE} WHERE "{col}" IS NOT NULL ORDER BY "{col}"'
+            f'SELECT DISTINCT "{vcol}" FROM {vtbl} WHERE "{vcol}" IS NOT NULL ORDER BY "{vcol}"'
         ).fetchall()
         result[key] = [str(r[0]) for r in rows]
     return result
@@ -333,6 +362,7 @@ def metrics(db_file: str) -> dict:
 
     All values are integers; NaN/None are coerced to 0."""
     conn = get_conn(db_file)
+    vtbl = _validate_table(TABLE)
     row = conn.execute(f"""
         SELECT
             count(*),
@@ -342,7 +372,7 @@ def metrics(db_file: str) -> dict:
             count(DISTINCT "package_name"),
             count(*) FILTER (WHERE LOWER("is_open_source") = 'true'),
             count(*) FILTER (WHERE LOWER("is_open_source") != 'true')
-        FROM {TABLE}
+        FROM {vtbl}
     """).fetchone()
     keys = [
         "total_entries", "unique_dependencies", "repos", "orgs",
@@ -393,12 +423,13 @@ def agg_org(db_file: str) -> list[dict]:
 
     Returns: org, total_deps, unique_deps, repos per org."""
     conn = get_conn(db_file)
+    vtbl = _validate_table(TABLE)
     return _clean_records(conn.execute(f"""
         SELECT "org_name" AS "org",
                count(*) AS "total_deps",
                count(DISTINCT "dependency_name") AS "unique_deps",
                count(DISTINCT "repo_name") AS "repos"
-        FROM {TABLE} GROUP BY 1 ORDER BY "total_deps" DESC LIMIT 20
+        FROM {vtbl} GROUP BY 1 ORDER BY "total_deps" DESC LIMIT 20
     """).fetchdf())
 
 
@@ -407,12 +438,13 @@ def agg_repo(db_file: str) -> list[dict]:
 
     Returns: repo, org, total_deps, unique_deps per repo."""
     conn = get_conn(db_file)
+    vtbl = _validate_table(TABLE)
     return _clean_records(conn.execute(f"""
         SELECT "repo_name" AS "repo",
                "org_name" AS "org",
                count(*) AS "total_deps",
                count(DISTINCT "dependency_name") AS "unique_deps"
-        FROM {TABLE} GROUP BY 1, 2 ORDER BY "total_deps" DESC LIMIT 20
+        FROM {vtbl} GROUP BY 1, 2 ORDER BY "total_deps" DESC LIMIT 20
     """).fetchdf())
 
 
@@ -422,11 +454,12 @@ def agg_top_dependencies(db_file: str) -> list[dict]:
     Returns: dependency name, repo_count (how many repo×package_file entries
     use it), and distinct repos count."""
     conn = get_conn(db_file)
+    vtbl = _validate_table(TABLE)
     return _clean_records(conn.execute(f"""
         SELECT "dependency_name" AS "dependency",
                count(*) AS "repo_count",
                count(DISTINCT "repo_name") AS "repos"
-        FROM {TABLE} GROUP BY 1 ORDER BY "repo_count" DESC LIMIT 20
+        FROM {vtbl} GROUP BY 1 ORDER BY "repo_count" DESC LIMIT 20
     """).fetchdf())
 
 

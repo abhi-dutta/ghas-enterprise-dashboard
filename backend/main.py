@@ -20,11 +20,18 @@ import auth
 
 app = FastAPI(title="GHAS Dashboard API", version="1.0.0")
 
+def _parse_cors_origins() -> list[str]:
+    """Parse CORS_ALLOWED_ORIGINS env var into a list of non-empty origin strings."""
+    raw = os.environ.get("CORS_ALLOWED_ORIGINS", "")
+    origins = [o.strip() for o in raw.split(",") if o.strip()]
+    return origins if origins else ["http://localhost:3000"]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_parse_cors_origins(),
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 # ── Auth routes (public) ───────────────────────────────────────────────────
@@ -193,6 +200,11 @@ def get_timeline(
     return timeline_engine.get_timeline(source=source)
 
 
+# Allowlist of valid table names for direct SQL interpolation (table names
+# cannot be parameterized in DuckDB queries).
+_VALID_TABLES = frozenset({engine.TABLE, secrets_engine.TABLE})
+
+
 # ── Overview (landing page) ────────────────────────────────────────────────
 @app.get("/overview")
 def overview(_: str = Depends(auth.require_auth)):
@@ -208,15 +220,18 @@ def overview(_: str = Depends(auth.require_auth)):
     sec_orgs: dict[str, dict] = {}
 
     if dep_db:
+        dep_table = engine.TABLE
+        if dep_table not in _VALID_TABLES:
+            raise ValueError(f"Invalid table name: {dep_table}")
         conn = engine.get_conn(dep_db)
-        for row in conn.execute(f"""
+        for row in conn.execute("""
             SELECT "Organization_Name" AS org,
                    count(*) AS total,
                    count(*) FILTER (WHERE "State"='open') AS open,
                    count(*) FILTER (WHERE "Severity"='critical') AS critical,
                    count(*) FILTER (WHERE "Severity"='high') AS high,
                    count(DISTINCT "Repository_Name") AS repos
-            FROM {engine.TABLE}
+            FROM """ + dep_table + """
             WHERE "Organization_Name" IS NOT NULL
             GROUP BY 1
         """).fetchall():
@@ -226,15 +241,18 @@ def overview(_: str = Depends(auth.require_auth)):
             }
 
     if sec_db:
+        sec_table = secrets_engine.TABLE
+        if sec_table not in _VALID_TABLES:
+            raise ValueError(f"Invalid table name: {sec_table}")
         conn = secrets_engine.get_conn(sec_db)
-        for row in conn.execute(f"""
+        for row in conn.execute("""
             SELECT "Organization_Name" AS org,
                    count(*) AS total,
                    count(*) FILTER (WHERE "State"='open') AS open,
                    count(*) FILTER (WHERE CAST("Publicly_Leaked" AS VARCHAR) IN ('True','true')) AS leaked,
                    count(*) FILTER (WHERE CAST("Push_Protection_Bypassed" AS VARCHAR) IN ('True','true')) AS bypassed,
                    count(DISTINCT "Repository_Name") AS repos
-            FROM {secrets_engine.TABLE}
+            FROM """ + sec_table + """
             WHERE "Organization_Name" IS NOT NULL
             GROUP BY 1
         """).fetchall():
