@@ -72,7 +72,7 @@ def get_conn(db_file: str) -> duckdb.DuckDBPyConnection:
 # ── Ingestion ──────────────────────────────────────────────────────────────
 def _fingerprint(p: Path) -> str:
     s = p.stat()
-    return hashlib.md5(f"{p.name}-{s.st_size}-{s.st_mtime_ns}".encode()).hexdigest()[:12]
+    return hashlib.sha256(f"{p.name}-{s.st_size}-{s.st_mtime_ns}".encode()).hexdigest()[:12]
 
 
 def db_path_for(csv_path: Path) -> Path:

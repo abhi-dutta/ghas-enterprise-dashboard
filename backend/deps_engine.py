@@ -99,7 +99,7 @@ def _fingerprint(p: Path) -> str:
     Two uploads of the same file with identical content produce the same
     fingerprint and reuse the cached .duckdb, avoiding redundant ingestion."""
     s = p.stat()
-    return hashlib.md5(f"{p.name}-{s.st_size}-{s.st_mtime_ns}".encode()).hexdigest()[:12]
+    return hashlib.sha256(f"{p.name}-{s.st_size}-{s.st_mtime_ns}".encode()).hexdigest()[:12]
 
 
 def db_path_for(csv_path: Path) -> Path:
