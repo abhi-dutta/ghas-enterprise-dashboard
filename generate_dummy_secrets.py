@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Generate 5000 dummy rows and append to secret_scanning.csv"""
 import csv
-import random
+import secrets
 import hashlib
 from datetime import datetime, timedelta
 
-random.seed(42)
+_rng = secrets.SystemRandom()
 
 CSV_PATH = 'secret_scanning.csv'
 
@@ -85,34 +85,34 @@ NUM_NEW = 5000
 new_rows = []
 for i in range(NUM_NEW):
     alert_num = max_alert + i + 1
-    org = random.choice(orgs)
-    repo = random.choice(repos)
-    st_name, st_id = random.choice(secret_types)
-    state = random.choice(states)
-    validity = random.choice(validities)
+    org = _rng.choice(orgs)
+    repo = _rng.choice(repos)
+    st_name, st_id = _rng.choice(secret_types)
+    state = _rng.choice(states)
+    validity = _rng.choice(validities)
 
-    created = start_date + timedelta(days=random.randint(0, date_range_days),
-                                     hours=random.randint(0, 23),
-                                     minutes=random.randint(0, 59),
-                                     seconds=random.randint(0, 59))
-    updated = created + timedelta(days=random.randint(0, 30), hours=random.randint(0, 23))
+    created = start_date + timedelta(days=_rng.randint(0, date_range_days),
+                                     hours=_rng.randint(0, 23),
+                                     minutes=_rng.randint(0, 59),
+                                     seconds=_rng.randint(0, 59))
+    updated = created + timedelta(days=_rng.randint(0, 30), hours=_rng.randint(0, 23))
 
-    publicly_leaked = random.choice(['True', 'False', 'False', 'False'])
-    push_bypassed = random.choice(['True', 'False', 'False', 'False'])
+    publicly_leaked = _rng.choice(['True', 'False', 'False', 'False'])
+    push_bypassed = _rng.choice(['True', 'False', 'False', 'False'])
 
     resolution = ''
     resolved_by = ''
     resolved_at = ''
     if state in ('resolved', 'dismissed'):
-        resolution = random.choice(resolutions)
-        resolved_by = random.choice(['admin', 'security-bot', 'dev-lead', 'ci-automation', ''])
-        resolved_at = (updated + timedelta(days=random.randint(0, 7))).strftime('%Y-%m-%dT%H:%M:%SZ')
+        resolution = _rng.choice(resolutions)
+        resolved_by = _rng.choice(['admin', 'security-bot', 'dev-lead', 'ci-automation', ''])
+        resolved_at = (updated + timedelta(days=_rng.randint(0, 7))).strftime('%Y-%m-%dT%H:%M:%SZ')
 
-    loc_path = random.choice(location_paths)
-    start_line = random.randint(1, 200)
-    end_line = start_line + random.randint(0, 2)
-    start_col = random.randint(1, 80)
-    end_col = start_col + random.randint(10, 60)
+    loc_path = _rng.choice(location_paths)
+    start_line = _rng.randint(1, 200)
+    end_line = start_line + _rng.randint(0, 2)
+    start_col = _rng.randint(1, 80)
+    end_col = start_col + _rng.randint(10, 60)
     blob_sha = hashlib.sha256(f"{org}-{repo}-{alert_num}-{loc_path}".encode()).hexdigest()
 
     new_rows.append({
@@ -139,7 +139,7 @@ for i in range(NUM_NEW):
         'Location_Blob_Sha': blob_sha,
         'Location_Blob_URL': f"https://api.github.com/repos/{org}/{repo}/git/blobs/{blob_sha}",
         'Locations_URL': f"https://api.github.com/repos/{org}/{repo}/secret-scanning/alerts/{alert_num}/locations",
-        'Has_More_Locations': random.choice(['True', 'False']),
+        'Has_More_Locations': _rng.choice(['True', 'False']),
     })
 
 with open(CSV_PATH, 'a', newline='') as f:
