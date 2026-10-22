@@ -62,7 +62,7 @@ export default function DepsCharts() {
                  label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
                  labelLine={false}>
               {(os.data ?? []).map(d => (
-                <Cell key={d.category} fill={OS_COLOR[d.category] ?? '#6b7280'} />
+                <Cell key={d.category} fill={Object.prototype.hasOwnProperty.call(OS_COLOR, d.category) ? OS_COLOR[d.category] : '#6b7280'} />
               ))}
             </Pie>
             <Tooltip contentStyle={{ background: '#1f2937', border: '1px solid #374151', borderRadius: 6 }} />

@@ -14,8 +14,9 @@ export const SEV_BG: Record<string, string> = {
 }
 
 export function severityBadge(s: string) {
-  const color = SEV_COLOR[s?.toLowerCase()] ?? '#6b7280'
-  const bg    = SEV_BG[s?.toLowerCase()]   ?? 'rgba(107,114,128,0.15)'
+  const key = s?.toLowerCase() ?? ''
+  const color = Object.prototype.hasOwnProperty.call(SEV_COLOR, key) ? SEV_COLOR[key] : '#6b7280'
+  const bg    = Object.prototype.hasOwnProperty.call(SEV_BG, key) ? SEV_BG[key] : 'rgba(107,114,128,0.15)'
   return { color, background: bg, border: `1px solid ${color}`, borderRadius: 4,
            padding: '1px 7px', fontSize: 12, fontWeight: 600, display: 'inline-block' }
 }
@@ -27,7 +28,8 @@ export function stateBadge(s: string) {
     dismissed:     { color: '#9ca3af', bg: 'rgba(156,163,175,0.1)' },
     auto_dismissed:{ color: '#9ca3af', bg: 'rgba(156,163,175,0.1)' },
   }
-  const { color, bg } = map[s?.toLowerCase()] ?? { color: '#9ca3af', bg: 'rgba(156,163,175,0.1)' }
+  const stateKey = s?.toLowerCase() ?? ''
+  const { color, bg } = Object.prototype.hasOwnProperty.call(map, stateKey) ? map[stateKey] : { color: '#9ca3af', bg: 'rgba(156,163,175,0.1)' }
   return { color, background: bg, border: `1px solid ${color}`, borderRadius: 4,
            padding: '1px 7px', fontSize: 12, fontWeight: 600, display: 'inline-block' }
 }

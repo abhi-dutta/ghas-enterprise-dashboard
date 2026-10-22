@@ -19,7 +19,8 @@ function validityBadge(v: string) {
     inactive: { color: '#9ca3af', bg: 'rgba(156,163,175,0.1)' },
     unknown:  { color: '#f59e0b', bg: 'rgba(245,158,11,0.15)' },
   }
-  const { color, bg } = map[v?.toLowerCase()] ?? { color: '#9ca3af', bg: 'rgba(156,163,175,0.1)' }
+  const valKey = v?.toLowerCase() ?? ''
+  const { color, bg } = Object.prototype.hasOwnProperty.call(map, valKey) ? map[valKey] : { color: '#9ca3af', bg: 'rgba(156,163,175,0.1)' }
   return { color, background: bg, border: `1px solid ${color}`, borderRadius: 4,
            padding: '1px 7px', fontSize: 12, fontWeight: 600, display: 'inline-block' as const }
 }

@@ -104,7 +104,10 @@ export default function TimelineChart() {
   const [isDragging, setIsDragging] = useState(false)
 
   const toggle = (key: SeriesKey) => {
-    setVisible(prev => ({ ...prev, [key]: !prev[key] }))
+    setVisible(prev => {
+      const current = Object.prototype.hasOwnProperty.call(prev, key) ? prev[key] : false
+      return { ...prev, [key]: !current }
+    })
   }
 
   // ── Zoom handlers ─────────────────────────────────────────────────────
@@ -225,24 +228,26 @@ export default function TimelineChart() {
           </div>
           {isZoomed && (
             <span style={{ fontSize: 10, color: '#60a5fa', fontWeight: 600 }}>
-              Zoomed: {fmtDate(displayData[0]?.timestamp)} → {fmtDate(displayData[displayData.length - 1]?.timestamp)}
+              Zoomed: {fmtDate(displayData[0]?.timestamp)} → {fmtDate(displayData.at(-1)?.timestamp ?? '')}
             </span>
           )}
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {SERIES.map(s => (
+          {SERIES.map(s => {
+            const isVisible = Object.prototype.hasOwnProperty.call(visible, s.key) && visible[s.key]
+            return (
             <button
               key={s.key}
               onClick={() => toggle(s.key)}
               style={{
                 display: 'flex', alignItems: 'center', gap: 5,
                 padding: '3px 10px', borderRadius: 12, fontSize: 11, cursor: 'pointer',
-                fontWeight: visible[s.key] ? 700 : 400,
-                background: visible[s.key] ? s.color + '20' : '#1f2937',
-                color: visible[s.key] ? s.color : '#6b7280',
-                border: visible[s.key] ? `1px solid ${s.color}50` : '1px solid #374151',
+                fontWeight: isVisible ? 700 : 400,
+                background: isVisible ? s.color + '20' : '#1f2937',
+                color: isVisible ? s.color : '#6b7280',
+                border: isVisible ? `1px solid ${s.color}50` : '1px solid #374151',
                 transition: 'all 0.15s',
-                opacity: visible[s.key] ? 1 : 0.5,
+                opacity: isVisible ? 1 : 0.5,
               }}
             >
               <div style={{
@@ -252,7 +257,7 @@ export default function TimelineChart() {
               }} />
               {s.label}
             </button>
-          ))}
+          )})}
         </div>
       </div>
 
@@ -354,7 +359,7 @@ export default function TimelineChart() {
       {/* Snapshot count info */}
       <div style={{ marginTop: 10, fontSize: 11, color: '#6b7280', textAlign: 'right' }}>
         {snapshots.length} snapshot{snapshots.length !== 1 ? 's' : ''} recorded
-        {merged.length > 0 && ` · ${fmtDate(merged[0].timestamp)} → ${fmtDate(merged[merged.length - 1].timestamp)}`}
+        {merged.length > 0 && ` · ${fmtDate(merged[0].timestamp)} → ${fmtDate(merged.at(-1)?.timestamp ?? '')}`}
       </div>
     </div>
   )

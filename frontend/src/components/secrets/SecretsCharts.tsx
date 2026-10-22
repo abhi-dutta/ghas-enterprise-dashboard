@@ -49,9 +49,10 @@ export default function SecretsCharts() {
                  cx="50%" cy="50%" outerRadius={90}
                  label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
                  labelLine={false}>
-              {(st.data ?? []).map(d => (
-                <Cell key={d.State} fill={STATE_COLOR[d.State?.toLowerCase()] ?? '#6b7280'} />
-              ))}
+              {(st.data ?? []).map(d => {
+                const stKey = d.State?.toLowerCase() ?? ''
+                return <Cell key={d.State} fill={Object.prototype.hasOwnProperty.call(STATE_COLOR, stKey) ? STATE_COLOR[stKey] : '#6b7280'} />
+              })}
             </Pie>
             <Tooltip contentStyle={{ background: '#1f2937', border: '1px solid #374151', borderRadius: 6 }} />
           </PieChart>
@@ -66,9 +67,10 @@ export default function SecretsCharts() {
                  cx="50%" cy="50%" outerRadius={90}
                  label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
                  labelLine={false}>
-              {(val.data ?? []).map(d => (
-                <Cell key={d.Validity} fill={VALIDITY_COLOR[d.Validity?.toLowerCase()] ?? '#6b7280'} />
-              ))}
+              {(val.data ?? []).map(d => {
+                const valKey = d.Validity?.toLowerCase() ?? ''
+                return <Cell key={d.Validity} fill={Object.prototype.hasOwnProperty.call(VALIDITY_COLOR, valKey) ? VALIDITY_COLOR[valKey] : '#6b7280'} />
+              })}
             </Pie>
             <Tooltip contentStyle={{ background: '#1f2937', border: '1px solid #374151', borderRadius: 6 }} />
           </PieChart>

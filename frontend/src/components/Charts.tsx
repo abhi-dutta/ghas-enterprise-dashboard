@@ -39,9 +39,10 @@ export default function Charts() {
                  cx="50%" cy="50%" outerRadius={90} label={({ name, percent }) =>
                    `${name} ${(percent * 100).toFixed(0)}%`}
                  labelLine={false}>
-              {(sev.data ?? []).map(d => (
-                <Cell key={d.Severity} fill={SEV_COLOR[d.Severity?.toLowerCase()] ?? '#6b7280'} />
-              ))}
+              {(sev.data ?? []).map(d => {
+                const sevKey = d.Severity?.toLowerCase() ?? ''
+                return <Cell key={d.Severity} fill={Object.prototype.hasOwnProperty.call(SEV_COLOR, sevKey) ? SEV_COLOR[sevKey] : '#6b7280'} />
+              })}
             </Pie>
             <Tooltip contentStyle={{ background: '#1f2937', border: '1px solid #374151', borderRadius: 6 }} />
           </PieChart>

@@ -214,16 +214,16 @@ export default function LandingPage({ onNavigate }: {
 
         {/* Legend */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 14 }}>
-          {['Low', 'Medium', 'High', 'Critical'].map((label, i) => (
+          {([
+            { label: 'Low', bg: 'rgba(74,222,128,0.35)' },
+            { label: 'Medium', bg: 'rgba(250,204,21,0.5)' },
+            { label: 'High', bg: 'rgba(249,115,22,0.6)' },
+            { label: 'Critical', bg: 'rgba(239,68,68,0.8)' },
+          ] as const).map(({ label, bg }) => (
             <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
               <div style={{
                 width: 14, height: 14, borderRadius: 3,
-                background: [
-                  'rgba(74,222,128,0.35)',
-                  'rgba(250,204,21,0.5)',
-                  'rgba(249,115,22,0.6)',
-                  'rgba(239,68,68,0.8)',
-                ][i],
+                background: bg,
               }} />
               <span style={{ fontSize: 11, color: '#9ca3af' }}>{label}</span>
             </div>
