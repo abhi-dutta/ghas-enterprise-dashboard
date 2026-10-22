@@ -113,7 +113,7 @@ for i in range(NUM_NEW):
     end_line = start_line + random.randint(0, 2)
     start_col = random.randint(1, 80)
     end_col = start_col + random.randint(10, 60)
-    blob_sha = hashlib.sha1(f"{org}-{repo}-{alert_num}-{loc_path}".encode()).hexdigest()
+    blob_sha = hashlib.sha256(f"{org}-{repo}-{alert_num}-{loc_path}".encode()).hexdigest()
 
     new_rows.append({
         'Alert_Number': str(alert_num),
