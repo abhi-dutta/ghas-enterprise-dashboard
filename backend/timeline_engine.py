@@ -43,6 +43,17 @@ CACHE_DIR = Path(__file__).parent / ".cache"
 TIMELINE_DB = CACHE_DIR / "timeline.duckdb"
 TABLE = "timeline_snapshots"
 
+# ── Identifier allowlist (table/column names cannot use ? params) ─────────
+_ALLOWED_TABLES = frozenset({"timeline_snapshots"})
+
+
+def _safe_table(name: str) -> str:
+    """Validate a table name against the allowlist to prevent SQL injection."""
+    if name not in _ALLOWED_TABLES:
+        raise ValueError("Invalid table name: " + repr(name))
+    return name
+
+
 # ── Thread safety ──────────────────────────────────────────────────────────
 _local = threading.local()
 _write_lock = threading.Lock()
@@ -78,7 +89,7 @@ def _ensure_table() -> None:
     if TIMELINE_DB.exists():
         try:
             rconn = duckdb.connect(str(TIMELINE_DB), read_only=True)
-            rconn.execute(f"SELECT 1 FROM {TABLE} LIMIT 1")
+            rconn.execute("SELECT 1 FROM " + _safe_table(TABLE) + " LIMIT 1")
             rconn.close()
             return  # Table exists — nothing to do
         except Exception:
@@ -87,8 +98,8 @@ def _ensure_table() -> None:
     with _write_lock:
         conn = duckdb.connect(str(TIMELINE_DB))
         try:
-            conn.execute(f"""
-                CREATE TABLE IF NOT EXISTS {TABLE} (
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS """ + _safe_table(TABLE) + """ (
                     id            INTEGER PRIMARY KEY,
                     timestamp     TIMESTAMP NOT NULL,
                     source        VARCHAR NOT NULL,
@@ -108,9 +119,9 @@ def _ensure_table() -> None:
                 )
             """)
             # Create a unique index to prevent duplicate snapshots for the same CSV
-            conn.execute(f"""
+            conn.execute("""
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_timeline_dedup
-                ON {TABLE} (source, fingerprint)
+                ON """ + _safe_table(TABLE) + """ (source, fingerprint)
             """)
         finally:
             conn.close()
@@ -150,20 +161,21 @@ def record_snapshot(source: str, fingerprint: str, metrics_dict: dict) -> bool:
     with _write_lock:
         conn = duckdb.connect(str(TIMELINE_DB))
         try:
+            _tbl = _safe_table(TABLE)
             # Check if this fingerprint already has a snapshot
             existing = conn.execute(
-                f'SELECT id FROM {TABLE} WHERE source = ? AND fingerprint = ?',
+                'SELECT id FROM ' + _tbl + ' WHERE source = ? AND fingerprint = ?',
                 [source, fingerprint]
             ).fetchone()
             if existing:
                 return False  # Already recorded — skip duplicate
 
             # Get next ID
-            max_id = conn.execute(f"SELECT COALESCE(MAX(id), 0) FROM {TABLE}").fetchone()[0]
+            max_id = conn.execute("SELECT COALESCE(MAX(id), 0) FROM " + _tbl).fetchone()[0]
             next_id = max_id + 1
 
             conn.execute(
-                f"""INSERT INTO {TABLE}
+                """INSERT INTO """ + _tbl + """
                     (id, timestamp, source, fingerprint,
                      total, open, critical, high, medium, low,
                      fixed, dismissed, leaked, bypassed, orgs, repos)
@@ -206,14 +218,15 @@ def get_timeline(source: Optional[str] = None) -> list[dict]:
             return []
 
     try:
+        _tbl = _safe_table(TABLE)
         if source:
             df = conn.execute(
-                f'SELECT * FROM {TABLE} WHERE source = ? ORDER BY timestamp ASC',
+                'SELECT * FROM ' + _tbl + ' WHERE source = ? ORDER BY timestamp ASC',
                 [source]
             ).fetchdf()
         else:
             df = conn.execute(
-                f'SELECT * FROM {TABLE} ORDER BY timestamp ASC'
+                'SELECT * FROM ' + _tbl + ' ORDER BY timestamp ASC'
             ).fetchdf()
         return _clean_records(df)
     except Exception:

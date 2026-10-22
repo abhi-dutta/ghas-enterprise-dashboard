@@ -26,6 +26,24 @@ DISPLAY_COLS = [
     "CVE_ID", "CVSS_Score", "Advisory_Summary", "Created_At", "URL",
 ]
 
+_ALLOWED_TABLES = frozenset({TABLE})
+_ALLOWED_COLUMNS = frozenset(set(DISPLAY_COLS) | set(DATE_COLS))
+
+
+def _safe_table(name: str) -> str:
+    """Validate a table name against the allowlist to prevent SQL injection."""
+    if name not in _ALLOWED_TABLES:
+        raise ValueError("Invalid table name: " + repr(name))
+    return name
+
+
+def _safe_col(name: str) -> str:
+    """Validate a column name against the allowlist to prevent SQL injection."""
+    if name not in _ALLOWED_COLUMNS:
+        raise ValueError("Invalid column name: " + repr(name))
+    return name
+
+
 # ── Thread-local connections ───────────────────────────────────────────────
 _local = threading.local()
 _lock = threading.Lock()
@@ -85,7 +103,7 @@ def ingest(csv_path: Path) -> str:
         # Verify the cached DB actually contains our table
         try:
             conn = duckdb.connect(str(db), read_only=True)
-            conn.execute(f"SELECT 1 FROM {TABLE} LIMIT 1")
+            conn.execute("SELECT 1 FROM " + _safe_table(TABLE) + " LIMIT 1")
             conn.close()
         except Exception:
             # Stale/corrupt cache — delete and re-ingest
@@ -104,35 +122,37 @@ def ingest(csv_path: Path) -> str:
 
     conn = duckdb.connect(str(db))
     try:
-        conn.execute(f"""
-            CREATE TABLE {TABLE} AS
-            SELECT * FROM read_csv_auto(
-                '{csv_path}',
-                sample_size=20000,
-                all_varchar=false,
-                ignore_errors=true
-            )
-        """)
+        conn.execute(
+            "CREATE TABLE " + _safe_table(TABLE) + " AS "
+            "SELECT * FROM read_csv_auto("
+            "?, sample_size=20000, all_varchar=false, ignore_errors=true"
+            ")",
+            [str(csv_path)],
+        )
         existing = _col_set(conn)
         for col in DATE_COLS:
             if col in existing:
                 dtype = conn.execute(
-                    f"SELECT data_type FROM information_schema.columns "
-                    f"WHERE table_name='{TABLE}' AND column_name='{col}'"
+                    "SELECT data_type FROM information_schema.columns "
+                    "WHERE table_name=? AND column_name=?",
+                    [_safe_table(TABLE), _safe_col(col)],
                 ).fetchone()[0]
                 if "VARCHAR" in dtype.upper():
-                    conn.execute(f"""
-                        ALTER TABLE {TABLE}
-                        ALTER COLUMN "{col}"
-                        SET DATA TYPE TIMESTAMP
-                        USING TRY_CAST("{col}" AS TIMESTAMP)
-                    """)
+                    safe_col = _safe_col(col)
+                    conn.execute(
+                        'ALTER TABLE ' + _safe_table(TABLE) + ' '
+                        'ALTER COLUMN "' + safe_col + '" '
+                        'SET DATA TYPE TIMESTAMP '
+                        'USING TRY_CAST("' + safe_col + '" AS TIMESTAMP)'
+                    )
         for col in ["Severity", "State", "Dependency_Package_Ecosystem",
                     "Organization_Name", "Repository_Name", "CVE_ID"]:
             if col in existing:
+                safe_col = _safe_col(col)
+                idx_name = "idx_" + safe_col.lower().replace(" ", "_")
                 conn.execute(
-                    f'CREATE INDEX IF NOT EXISTS idx_{col.lower().replace(" ","_")} '
-                    f'ON {TABLE} ("{col}")'
+                    'CREATE INDEX IF NOT EXISTS ' + idx_name + ' '
+                    'ON ' + _safe_table(TABLE) + ' ("' + safe_col + '")'
                 )
     finally:
         conn.close()
@@ -153,7 +173,8 @@ def ingest(csv_path: Path) -> str:
 
 def _col_set(conn) -> set[str]:
     return {r[0] for r in conn.execute(
-        f"SELECT column_name FROM information_schema.columns WHERE table_name='{TABLE}'"
+        "SELECT column_name FROM information_schema.columns WHERE table_name=?",
+        [_safe_table(TABLE)],
     ).fetchall()}
 
 
@@ -237,8 +258,10 @@ def filter_options(db_file: str) -> dict:
         ("states", "State"),
         ("ecosystems", "Dependency_Package_Ecosystem"),
     ]:
+        safe_col = _safe_col(col)
         rows = conn.execute(
-            f'SELECT DISTINCT "{col}" FROM {TABLE} WHERE "{col}" IS NOT NULL ORDER BY "{col}"'
+            'SELECT DISTINCT "' + safe_col + '" FROM ' + _safe_table(TABLE) +
+            ' WHERE "' + safe_col + '" IS NOT NULL ORDER BY "' + safe_col + '"'
         ).fetchall()
         result[key] = [str(r[0]) for r in rows]
     return result
@@ -267,22 +290,23 @@ def search_orgs(db_file: str, q: str = "", limit: int = 50) -> list[str]:
 
 def metrics(db_file: str) -> dict:
     conn = get_conn(db_file)
-    row = conn.execute(f"""
-        SELECT
-            count(*),
-            count(*) FILTER (WHERE "State"='open'),
-            count(*) FILTER (WHERE "State"='fixed'),
-            count(*) FILTER (WHERE "State" IN ('dismissed','auto_dismissed')),
-            count(*) FILTER (WHERE "Severity"='critical'),
-            count(*) FILTER (WHERE "Severity"='high'),
-            count(*) FILTER (WHERE "Severity"='medium'),
-            count(*) FILTER (WHERE "Severity"='low'),
-            ROUND(AVG(TRY_CAST("CVSS_Score" AS DOUBLE)),2),
-            count(DISTINCT "Repository_Name"),
-            count(DISTINCT "Organization_Name"),
-            count(DISTINCT "CVE_ID")
-        FROM {TABLE}
-    """).fetchone()
+    tbl = _safe_table(TABLE)
+    row = conn.execute(
+        "SELECT "
+        "count(*), "
+        """count(*) FILTER (WHERE "State"='open'), """
+        """count(*) FILTER (WHERE "State"='fixed'), """
+        """count(*) FILTER (WHERE "State" IN ('dismissed','auto_dismissed')), """
+        """count(*) FILTER (WHERE "Severity"='critical'), """
+        """count(*) FILTER (WHERE "Severity"='high'), """
+        """count(*) FILTER (WHERE "Severity"='medium'), """
+        """count(*) FILTER (WHERE "Severity"='low'), """
+        """ROUND(AVG(TRY_CAST("CVSS_Score" AS DOUBLE)),2), """
+        """count(DISTINCT "Repository_Name"), """
+        """count(DISTINCT "Organization_Name"), """
+        """count(DISTINCT "CVE_ID") """
+        "FROM " + tbl
+    ).fetchone()
     keys = ["total","open","fixed","dismissed","critical","high","medium",
             "low","avg_cvss","repos","orgs","cves"]
     return {
@@ -333,22 +357,22 @@ def agg_ecosystem(db_file: str) -> list[dict]:
 
 def agg_org(db_file: str) -> list[dict]:
     conn = get_conn(db_file)
-    return _clean_records(conn.execute(f"""
-        SELECT "Organization_Name" AS "org",
-               count(*) AS "total",
-               count(*) FILTER (WHERE "State"='open') AS "open",
-               count(DISTINCT "Repository_Name") AS "repos"
-        FROM {TABLE} GROUP BY 1 ORDER BY "total" DESC LIMIT 20
-    """).fetchdf())
+    return _clean_records(conn.execute(
+        'SELECT "Organization_Name" AS "org", '
+        'count(*) AS "total", '
+        """count(*) FILTER (WHERE "State"='open') AS "open", """
+        'count(DISTINCT "Repository_Name") AS "repos" '
+        "FROM " + _safe_table(TABLE) + ' GROUP BY 1 ORDER BY "total" DESC LIMIT 20'
+    ).fetchdf())
 
 
 def agg_trend(db_file: str) -> list[dict]:
     conn = get_conn(db_file)
-    df = conn.execute(f"""
-        SELECT CAST("Created_At" AS DATE) AS "date", count(*) AS "count"
-        FROM {TABLE} WHERE "Created_At" IS NOT NULL
-        GROUP BY 1 ORDER BY 1
-    """).fetchdf()
+    df = conn.execute(
+        'SELECT CAST("Created_At" AS DATE) AS "date", count(*) AS "count" '
+        "FROM " + _safe_table(TABLE) + ' WHERE "Created_At" IS NOT NULL '
+        "GROUP BY 1 ORDER BY 1"
+    ).fetchdf()
     df["date"] = df["date"].astype(str)
     return _clean_records(df)
 

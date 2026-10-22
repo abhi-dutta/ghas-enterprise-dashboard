@@ -26,6 +26,32 @@ DISPLAY_COLS = [
     "Location_Path", "Created_At", "URL",
 ]
 
+ALLOWED_TABLES = frozenset({TABLE})
+
+ALLOWED_COLUMNS = frozenset({
+    "Alert_Number", "Organization_Name", "Repository_Name",
+    "Secret_Type", "State", "Validity", "Resolution",
+    "Push_Protection_Bypassed", "Publicly_Leaked",
+    "Location_Path", "Created_At", "Updated_At", "Resolved_At", "URL",
+    "Location_Start_Line", "Location_End_Line",
+    "Location_Start_Column", "Location_End_Column",
+})
+
+
+def _validated_table(name: str) -> str:
+    """Validate table name against allowlist to prevent SQL injection."""
+    if name not in ALLOWED_TABLES:
+        raise ValueError(f"Invalid table name: {name!r}")
+    return name
+
+
+def _validated_col(name: str) -> str:
+    """Validate column name against allowlist to prevent SQL injection."""
+    if name not in ALLOWED_COLUMNS:
+        raise ValueError(f"Invalid column name: {name!r}")
+    return name
+
+
 # ── Thread-local connections ───────────────────────────────────────────────
 _local = threading.local()
 _lock = threading.Lock()
@@ -78,7 +104,7 @@ def ingest(csv_path: Path) -> str:
         # Verify the cached DB actually contains our table
         try:
             conn = duckdb.connect(str(db), read_only=True)
-            conn.execute(f"SELECT 1 FROM {TABLE} LIMIT 1")
+            conn.execute(f"SELECT 1 FROM {_validated_table(TABLE)} LIMIT 1")
             conn.close()
         except Exception:
             # Stale/corrupt cache — delete and re-ingest
@@ -100,12 +126,15 @@ def ingest(csv_path: Path) -> str:
         # Use pandas for CSV reading to avoid DuckDB's sniffing issues,
         # then register the DataFrame as a DuckDB table.
         df = pd.read_csv(str(csv_path), dtype=str, keep_default_na=False)
-        conn.execute(f"CREATE TABLE {TABLE} AS SELECT * FROM df")
+        conn.execute(f"CREATE TABLE {_validated_table(TABLE)} AS SELECT * FROM df")
         existing = _col_set(conn)
         # Replace empty strings with NULL (pandas read everything as str)
         for col in existing:
             try:
-                conn.execute(f'UPDATE {TABLE} SET "{col}" = NULL WHERE "{col}" = \'\'')
+                conn.execute(
+                    f'UPDATE {_validated_table(TABLE)} SET "{_validated_col(col)}" = NULL '
+                    f'WHERE "{_validated_col(col)}" = ?', ['']
+                )
             except Exception:
                 pass
         # Cast numeric columns from VARCHAR
@@ -113,27 +142,28 @@ def ingest(csv_path: Path) -> str:
                      "Location_Start_Column", "Location_End_Column"]:
             if col in existing:
                 try:
-                    conn.execute(f"""
-                        ALTER TABLE {TABLE}
-                        ALTER COLUMN "{col}"
-                        SET DATA TYPE BIGINT
-                        USING TRY_CAST("{col}" AS BIGINT)
-                    """)
+                    conn.execute(
+                        f'ALTER TABLE {_validated_table(TABLE)} '
+                        f'ALTER COLUMN "{_validated_col(col)}" '
+                        f'SET DATA TYPE BIGINT '
+                        f'USING TRY_CAST("{_validated_col(col)}" AS BIGINT)'
+                    )
                 except Exception:
                     pass
         for col in DATE_COLS:
             if col in existing:
                 dtype = conn.execute(
-                    f"SELECT data_type FROM information_schema.columns "
-                    f"WHERE table_name='{TABLE}' AND column_name='{col}'"
+                    "SELECT data_type FROM information_schema.columns "
+                    "WHERE table_name=? AND column_name=?",
+                    [TABLE, _validated_col(col)]
                 ).fetchone()[0]
                 if "VARCHAR" in dtype.upper():
-                    conn.execute(f"""
-                        ALTER TABLE {TABLE}
-                        ALTER COLUMN "{col}"
-                        SET DATA TYPE TIMESTAMP
-                        USING TRY_CAST("{col}" AS TIMESTAMP)
-                    """)
+                    conn.execute(
+                        f'ALTER TABLE {_validated_table(TABLE)} '
+                        f'ALTER COLUMN "{_validated_col(col)}" '
+                        f'SET DATA TYPE TIMESTAMP '
+                        f'USING TRY_CAST("{_validated_col(col)}" AS TIMESTAMP)'
+                    )
         for col in ["Secret_Type", "State", "Validity", "Resolution",
                      "Organization_Name", "Repository_Name"]:
             if col in existing:
@@ -160,7 +190,8 @@ def ingest(csv_path: Path) -> str:
 
 def _col_set(conn) -> set[str]:
     return {r[0] for r in conn.execute(
-        f"SELECT column_name FROM information_schema.columns WHERE table_name='{TABLE}'"
+        "SELECT column_name FROM information_schema.columns WHERE table_name=?",
+        [TABLE]
     ).fetchall()}
 
 
@@ -241,7 +272,8 @@ def filter_options(db_file: str) -> dict:
         ("validities", "Validity"),
     ]:
         rows = conn.execute(
-            f'SELECT DISTINCT "{col}" FROM {TABLE} WHERE "{col}" IS NOT NULL ORDER BY "{col}"'
+            f'SELECT DISTINCT "{_validated_col(col)}" FROM {_validated_table(TABLE)} '
+            f'WHERE "{_validated_col(col)}" IS NOT NULL ORDER BY "{_validated_col(col)}"'
         ).fetchall()
         result[key] = [str(r[0]) for r in rows]
     return result
@@ -269,23 +301,25 @@ def search_orgs(db_file: str, q: str = "", limit: int = 50) -> list[str]:
 
 def metrics(db_file: str) -> dict:
     conn = get_conn(db_file)
+    _t = _validated_table(TABLE)
     row = conn.execute(f"""
         SELECT
             count(*),
-            count(*) FILTER (WHERE "State"='open'),
-            count(*) FILTER (WHERE "State"='resolved'),
-            count(*) FILTER (WHERE "Validity"='active'),
-            count(*) FILTER (WHERE "Validity"='inactive'),
-            count(*) FILTER (WHERE "Validity"='unknown'),
-            count(*) FILTER (WHERE CAST("Push_Protection_Bypassed" AS VARCHAR)='True'
-                              OR CAST("Push_Protection_Bypassed" AS VARCHAR)='true'),
-            count(*) FILTER (WHERE CAST("Publicly_Leaked" AS VARCHAR)='True'
-                              OR CAST("Publicly_Leaked" AS VARCHAR)='true'),
+            count(*) FILTER (WHERE "State"=?),
+            count(*) FILTER (WHERE "State"=?),
+            count(*) FILTER (WHERE "Validity"=?),
+            count(*) FILTER (WHERE "Validity"=?),
+            count(*) FILTER (WHERE "Validity"=?),
+            count(*) FILTER (WHERE CAST("Push_Protection_Bypassed" AS VARCHAR)=?
+                              OR CAST("Push_Protection_Bypassed" AS VARCHAR)=?),
+            count(*) FILTER (WHERE CAST("Publicly_Leaked" AS VARCHAR)=?
+                              OR CAST("Publicly_Leaked" AS VARCHAR)=?),
             count(DISTINCT "Secret_Type"),
             count(DISTINCT "Repository_Name"),
             count(DISTINCT "Organization_Name")
-        FROM {TABLE}
-    """).fetchone()
+        FROM {_t}
+    """, ['open', 'resolved', 'active', 'inactive', 'unknown',
+          'True', 'true', 'True', 'true']).fetchone()
     keys = ["total", "open", "resolved", "active", "inactive", "unknown",
             "push_bypassed", "publicly_leaked", "secret_types", "repos", "orgs"]
     return {
@@ -339,17 +373,17 @@ def agg_org(db_file: str) -> list[dict]:
     return _clean_records(conn.execute(f"""
         SELECT "Organization_Name" AS "org",
                count(*) AS "total",
-               count(*) FILTER (WHERE "State"='open') AS "open",
+               count(*) FILTER (WHERE "State"=?) AS "open",
                count(DISTINCT "Repository_Name") AS "repos"
-        FROM {TABLE} GROUP BY 1 ORDER BY "total" DESC LIMIT 20
-    """).fetchdf())
+        FROM {_validated_table(TABLE)} GROUP BY 1 ORDER BY "total" DESC LIMIT 20
+    """, ['open']).fetchdf())
 
 
 def agg_trend(db_file: str) -> list[dict]:
     conn = get_conn(db_file)
     df = conn.execute(f"""
         SELECT CAST("Created_At" AS DATE) AS "date", count(*) AS "count"
-        FROM {TABLE} WHERE "Created_At" IS NOT NULL
+        FROM {_validated_table(TABLE)} WHERE "Created_At" IS NOT NULL
         GROUP BY 1 ORDER BY 1
     """).fetchdf()
     df["date"] = df["date"].astype(str)
