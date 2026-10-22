@@ -20,11 +20,18 @@ import auth
 
 app = FastAPI(title="GHAS Dashboard API", version="1.0.0")
 
+def _parse_cors_origins() -> list[str]:
+    """Parse CORS_ALLOWED_ORIGINS env var into a list of non-empty origin strings."""
+    raw = os.environ.get("CORS_ALLOWED_ORIGINS", "")
+    origins = [o.strip() for o in raw.split(",") if o.strip()]
+    return origins if origins else ["http://localhost:3000"]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_parse_cors_origins(),
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 # ── Auth routes (public) ───────────────────────────────────────────────────
