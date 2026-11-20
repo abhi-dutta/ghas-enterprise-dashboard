@@ -27,6 +27,10 @@ from typing import Optional
 import duckdb
 import pandas as pd
 
+from sql_safe import (
+    compose, distinct_values_sql, quote_ident, quote_ident_escaped, table_ident,
+)
+
 # ── Constants ──────────────────────────────────────────────────────────────
 # Cache directory for ingested .duckdb files (auto-created, gitignored)
 CACHE_DIR = Path(__file__).parent / ".cache"
@@ -38,6 +42,11 @@ DISPLAY_COLS = [
     "org_name", "repo_name", "package_name",
     "dependency_name", "is_open_source",
 ]
+
+# Columns for which filter_options() returns distinct values (allowlist)
+FILTER_OPTION_COLS = ("package_name", "is_open_source")
+_ORG = quote_ident("org_name")
+_REPO = quote_ident("repo_name")
 
 # ── Thread-local connections ───────────────────────────────────────────────
 # Each FastAPI worker thread gets its own DuckDB connection so concurrent
@@ -140,7 +149,10 @@ def ingest(csv_path: Path) -> str:
         # Replace empty strings with NULL for cleaner queries
         for col in existing:
             try:
-                conn.execute(f'UPDATE {TABLE} SET "{col}" = NULL WHERE "{col}" = \'\'')
+                qcol = quote_ident_escaped(col)
+                conn.execute(
+                    f"UPDATE {table_ident(TABLE)} SET {qcol} = NULL WHERE {qcol} = ''"
+                )
             except Exception:
                 pass
 
@@ -190,7 +202,7 @@ def display_col_sql(db_file: str) -> str:
     if not cols:
         _warm_col_cache(Path(db_file))
         cols = _col_cache.get(db_file, [])
-    return ", ".join(f'"{c}"' for c in cols) if cols else "*"
+    return ", ".join(quote_ident(c, DISPLAY_COLS) for c in cols) if cols else "*"
 
 
 # ── JSON-safe serialisation ───────────────────────────────────────────────
@@ -269,9 +281,8 @@ def filter_options(db_file: str) -> dict:
         ("package_files", "package_name"),
         ("is_open_source", "is_open_source"),
     ]:
-        rows = conn.execute(
-            f'SELECT DISTINCT "{col}" FROM {TABLE} WHERE "{col}" IS NOT NULL ORDER BY "{col}"'
-        ).fetchall()
+        sql = distinct_values_sql(TABLE, col, FILTER_OPTION_COLS)
+        rows = conn.execute(sql).fetchall()
         result[key] = [str(r[0]) for r in rows]
     return result
 
@@ -283,20 +294,20 @@ def search_orgs(db_file: str, q: str = "", limit: int = 50) -> list[str]:
     If q is empty, returns the first `limit` orgs alphabetically."""
     conn = get_conn(db_file)
     if q.strip():
-        rows = conn.execute(
-            f'SELECT DISTINCT "org_name" FROM {TABLE} '
-            f'WHERE "org_name" IS NOT NULL '
-            f'AND "org_name" ILIKE ? '
-            f'ORDER BY "org_name" LIMIT ?',
-            [f"%{q}%", limit],
-        ).fetchall()
+        sql = (
+            f'SELECT DISTINCT {_ORG} FROM {table_ident(TABLE)} '
+            f'WHERE {_ORG} IS NOT NULL '
+            f'AND {_ORG} ILIKE ? '
+            f'ORDER BY {_ORG} LIMIT ?'
+        )
+        rows = conn.execute(sql, [f"%{q}%", int(limit)]).fetchall()
     else:
-        rows = conn.execute(
-            f'SELECT DISTINCT "org_name" FROM {TABLE} '
-            f'WHERE "org_name" IS NOT NULL '
-            f'ORDER BY "org_name" LIMIT ?',
-            [limit],
-        ).fetchall()
+        sql = (
+            f'SELECT DISTINCT {_ORG} FROM {table_ident(TABLE)} '
+            f'WHERE {_ORG} IS NOT NULL '
+            f'ORDER BY {_ORG} LIMIT ?'
+        )
+        rows = conn.execute(sql, [int(limit)]).fetchall()
     return [str(r[0]) for r in rows]
 
 
@@ -307,20 +318,20 @@ def search_repos(db_file: str, q: str = "", limit: int = 50) -> list[str]:
     If q is empty, returns the first `limit` repos alphabetically."""
     conn = get_conn(db_file)
     if q.strip():
-        rows = conn.execute(
-            f'SELECT DISTINCT "repo_name" FROM {TABLE} '
-            f'WHERE "repo_name" IS NOT NULL '
-            f'AND "repo_name" ILIKE ? '
-            f'ORDER BY "repo_name" LIMIT ?',
-            [f"%{q}%", limit],
-        ).fetchall()
+        sql = (
+            f'SELECT DISTINCT {_REPO} FROM {table_ident(TABLE)} '
+            f'WHERE {_REPO} IS NOT NULL '
+            f'AND {_REPO} ILIKE ? '
+            f'ORDER BY {_REPO} LIMIT ?'
+        )
+        rows = conn.execute(sql, [f"%{q}%", int(limit)]).fetchall()
     else:
-        rows = conn.execute(
-            f'SELECT DISTINCT "repo_name" FROM {TABLE} '
-            f'WHERE "repo_name" IS NOT NULL '
-            f'ORDER BY "repo_name" LIMIT ?',
-            [limit],
-        ).fetchall()
+        sql = (
+            f'SELECT DISTINCT {_REPO} FROM {table_ident(TABLE)} '
+            f'WHERE {_REPO} IS NOT NULL '
+            f'ORDER BY {_REPO} LIMIT ?'
+        )
+        rows = conn.execute(sql, [int(limit)]).fetchall()
     return [str(r[0]) for r in rows]
 
 
@@ -366,12 +377,16 @@ def deps_page(db_file: str, page: int, page_size: int,
         Tuple of (total matching row count, list of row dicts for current page)."""
     conn = get_conn(db_file)
     where, params = where_clause(search, org, repo, package_file, is_open_source)
-    total = conn.execute(f"SELECT count(*) FROM {TABLE} {where}", params).fetchone()[0]
+    count_sql = compose(f"SELECT count(*) FROM {table_ident(TABLE)}", where, params)
+    total = conn.execute(count_sql, params).fetchone()[0]
     cols = display_col_sql(db_file)
     offset = (page - 1) * page_size
+    page_sql = compose(
+        f"SELECT {cols} FROM {table_ident(TABLE)}", where, params,
+        'ORDER BY "org_name", "repo_name", "dependency_name" LIMIT ? OFFSET ?',
+    )
     df: pd.DataFrame = conn.execute(
-        f"SELECT {cols} FROM {TABLE} {where} ORDER BY \"org_name\", \"repo_name\", \"dependency_name\" LIMIT ? OFFSET ?",
-        params + [page_size, offset],
+        page_sql, params + [int(page_size), int(offset)],
     ).fetchdf()
     return total, _clean_records(df)
 
@@ -451,7 +466,8 @@ def csv_export(db_file: str, search="", org=None, repo=None,
     (no pagination). Used by the /deps/list/export endpoint."""
     conn = get_conn(db_file)
     where, params = where_clause(search, org, repo, package_file, is_open_source)
-    df = conn.execute(f"SELECT * FROM {TABLE} {where}", params).fetchdf()
+    export_sql = compose(f"SELECT * FROM {table_ident(TABLE)}", where, params)
+    df = conn.execute(export_sql, params).fetchdf()
     buf = io.BytesIO()
     df.to_csv(buf, index=False)
     return buf.getvalue()
