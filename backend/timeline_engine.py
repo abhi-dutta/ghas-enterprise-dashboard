@@ -37,6 +37,8 @@ from typing import Optional
 import duckdb
 import pandas as pd
 
+from sql_safe import table_ident
+
 # ── Constants ──────────────────────────────────────────────────────────────
 CACHE_DIR = Path(__file__).parent / ".cache"
 # Persistent timeline DB — never auto-deleted unlike per-CSV caches
@@ -152,7 +154,7 @@ def record_snapshot(source: str, fingerprint: str, metrics_dict: dict) -> bool:
         try:
             # Check if this fingerprint already has a snapshot
             existing = conn.execute(
-                f'SELECT id FROM {TABLE} WHERE source = ? AND fingerprint = ?',
+                f'SELECT id FROM {table_ident(TABLE)} WHERE source = ? AND fingerprint = ?',
                 [source, fingerprint]
             ).fetchone()
             if existing:
@@ -163,7 +165,7 @@ def record_snapshot(source: str, fingerprint: str, metrics_dict: dict) -> bool:
             next_id = max_id + 1
 
             conn.execute(
-                f"""INSERT INTO {TABLE}
+                f"""INSERT INTO {table_ident(TABLE)}
                     (id, timestamp, source, fingerprint,
                      total, open, critical, high, medium, low,
                      fixed, dismissed, leaked, bypassed, orgs, repos)
@@ -208,7 +210,7 @@ def get_timeline(source: Optional[str] = None) -> list[dict]:
     try:
         if source:
             df = conn.execute(
-                f'SELECT * FROM {TABLE} WHERE source = ? ORDER BY timestamp ASC',
+                f'SELECT * FROM {table_ident(TABLE)} WHERE source = ? ORDER BY timestamp ASC',
                 [source]
             ).fetchdf()
         else:

@@ -14,8 +14,16 @@ from typing import Optional
 import duckdb
 import pandas as pd
 
+from sql_safe import (
+    compose, distinct_values_sql, quote_ident, quote_ident_escaped, table_ident,
+)
+
 CACHE_DIR = Path(__file__).parent / ".cache"
 TABLE = "secret_scanning_alerts"
+
+# Columns for which filter_options() returns distinct values (allowlist)
+FILTER_OPTION_COLS = ("Secret_Type", "State", "Validity")
+_ORG = quote_ident("Organization_Name")
 
 DATE_COLS = ["Created_At", "Updated_At", "Resolved_At"]
 
@@ -105,7 +113,10 @@ def ingest(csv_path: Path) -> str:
         # Replace empty strings with NULL (pandas read everything as str)
         for col in existing:
             try:
-                conn.execute(f'UPDATE {TABLE} SET "{col}" = NULL WHERE "{col}" = \'\'')
+                qcol = quote_ident_escaped(col)
+                conn.execute(
+                    f"UPDATE {table_ident(TABLE)} SET {qcol} = NULL WHERE {qcol} = ''"
+                )
             except Exception:
                 pass
         # Cast numeric columns from VARCHAR
@@ -181,7 +192,7 @@ def display_col_sql(db_file: str) -> str:
     if not cols:
         _warm_col_cache(Path(db_file))
         cols = _col_cache.get(db_file, [])
-    return ", ".join(f'"{c}"' for c in cols) if cols else "*"
+    return ", ".join(quote_ident(c, DISPLAY_COLS) for c in cols) if cols else "*"
 
 
 # ── JSON-safe serialisation ───────────────────────────────────────────────
@@ -240,9 +251,8 @@ def filter_options(db_file: str) -> dict:
         ("states", "State"),
         ("validities", "Validity"),
     ]:
-        rows = conn.execute(
-            f'SELECT DISTINCT "{col}" FROM {TABLE} WHERE "{col}" IS NOT NULL ORDER BY "{col}"'
-        ).fetchall()
+        sql = distinct_values_sql(TABLE, col, FILTER_OPTION_COLS)
+        rows = conn.execute(sql).fetchall()
         result[key] = [str(r[0]) for r in rows]
     return result
 
@@ -250,20 +260,20 @@ def filter_options(db_file: str) -> dict:
 def search_orgs(db_file: str, q: str = "", limit: int = 50) -> list[str]:
     conn = get_conn(db_file)
     if q.strip():
-        rows = conn.execute(
-            f'SELECT DISTINCT "Organization_Name" FROM {TABLE} '
-            f'WHERE "Organization_Name" IS NOT NULL '
-            f'AND "Organization_Name" ILIKE ? '
-            f'ORDER BY "Organization_Name" LIMIT ?',
-            [f"%{q}%", limit],
-        ).fetchall()
+        sql = (
+            f'SELECT DISTINCT {_ORG} FROM {table_ident(TABLE)} '
+            f'WHERE {_ORG} IS NOT NULL '
+            f'AND {_ORG} ILIKE ? '
+            f'ORDER BY {_ORG} LIMIT ?'
+        )
+        rows = conn.execute(sql, [f"%{q}%", int(limit)]).fetchall()
     else:
-        rows = conn.execute(
-            f'SELECT DISTINCT "Organization_Name" FROM {TABLE} '
-            f'WHERE "Organization_Name" IS NOT NULL '
-            f'ORDER BY "Organization_Name" LIMIT ?',
-            [limit],
-        ).fetchall()
+        sql = (
+            f'SELECT DISTINCT {_ORG} FROM {table_ident(TABLE)} '
+            f'WHERE {_ORG} IS NOT NULL '
+            f'ORDER BY {_ORG} LIMIT ?'
+        )
+        rows = conn.execute(sql, [int(limit)]).fetchall()
     return [str(r[0]) for r in rows]
 
 
@@ -299,12 +309,15 @@ def alert_page(db_file: str, page: int, page_size: int,
                ) -> tuple[int, list[dict]]:
     conn = get_conn(db_file)
     where, params = where_clause(search, secret_type, state, validity, org)
-    total = conn.execute(f"SELECT count(*) FROM {TABLE} {where}", params).fetchone()[0]
+    count_sql = compose(f"SELECT count(*) FROM {table_ident(TABLE)}", where, params)
+    total = conn.execute(count_sql, params).fetchone()[0]
     cols = display_col_sql(db_file)
     offset = (page - 1) * page_size
+    page_sql = compose(
+        f"SELECT {cols} FROM {table_ident(TABLE)}", where, params, "LIMIT ? OFFSET ?"
+    )
     df: pd.DataFrame = conn.execute(
-        f"SELECT {cols} FROM {TABLE} {where} LIMIT ? OFFSET ?",
-        params + [page_size, offset],
+        page_sql, params + [int(page_size), int(offset)],
     ).fetchdf()
     return total, _clean_records(df)
 
@@ -360,7 +373,8 @@ def csv_export(db_file: str, search="", secret_type=None, state=None,
                validity=None, org=None) -> bytes:
     conn = get_conn(db_file)
     where, params = where_clause(search, secret_type, state, validity, org)
-    df = conn.execute(f"SELECT * FROM {TABLE} {where}", params).fetchdf()
+    export_sql = compose(f"SELECT * FROM {table_ident(TABLE)}", where, params)
+    df = conn.execute(export_sql, params).fetchdf()
     buf = io.BytesIO()
     df.to_csv(buf, index=False)
     return buf.getvalue()
